@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Rome Arena — field battle</title>
+  <style>
+    html,body{margin:0;height:100%;background:#111;overflow:hidden;font-family:system-ui,sans-serif}
+    #hud{position:fixed;top:8px;left:10px;color:#ddd;font-size:13px;pointer-events:none;text-shadow:0 1px 2px #000}
+    #marquee{position:fixed;border:1px solid #ffe066;background:rgba(255,224,102,.12);display:none;pointer-events:none}
+    #banner{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:#fff;font-size:56px;text-shadow:0 2px 8px #000;pointer-events:none}
+    #mech{position:fixed;top:8px;right:10px;width:250px;color:#cdd3dd;font-size:12px;pointer-events:none;
+      background:rgba(10,14,20,.72);border:1px solid #333;border-radius:6px;padding:8px 10px;line-height:1.5}
+    #mech h3{margin:0 0 4px;font-size:12px;color:#ffe066;letter-spacing:1px}
+    #mech b{color:#fff}
+    #ticker{position:fixed;bottom:10px;left:10px;color:#bbb;font-size:12px;pointer-events:none;text-shadow:0 1px 2px #000;line-height:1.5}
+    #ticker .t0{color:#e88}
+    #ticker .t1{color:#8ae}
+    #lobby{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,8,12,.55)}
+    #lobby .card{background:rgba(10,14,20,.92);border:1px solid #444;border-radius:10px;padding:24px 36px;color:#ddd;text-align:center;font-size:15px;min-width:340px}
+    #lobby h2{margin:0 0 14px;color:#ffe066;letter-spacing:3px}
+    #roster .row{margin:3px 0}
+    #roster .you{color:#ffe066;font-weight:bold}
+    #roster .t0{color:#e88}
+    #roster .t1{color:#8ae}
+    #fight{margin-top:18px;font-size:18px;padding:10px 40px;background:#8a1f1f;color:#fff;border:1px solid #c33;border-radius:6px;cursor:pointer;letter-spacing:3px}
+    #fight:hover{background:#a52626}
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="hud"></div>
+  <div id="mech"></div>
+  <div id="ticker"></div>
+  <div id="marquee"></div>
+  <div id="banner"></div>
+  <div id="lobby"><div class="card"><h2>ROME ARENA</h2><div id="roster"></div><button id="fight">FIGHT</button></div></div>
+  <script type="module" src="./battle.js"></script>
+</body>
+</html>

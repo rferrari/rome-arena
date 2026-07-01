@@ -1,0 +1,149 @@
+// Bun game server: serves the static files AND runs the authoritative sim.
+// Flow: clients join a lobby and claim slots (AI fills the rest), any player
+// presses FIGHT to start; after a winner, FIGHT again resets to a new lobby.
+// Clients send JSON orders; server broadcasts binary snapshots @ 12Hz plus
+// JSON events/stats.
+import { createSim } from './sim.js';
+
+const arg = (name, def) => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i > -1 ? +process.argv[i + 1] : def;
+};
+const PORT = arg('port', 8321);
+const PLAYERS = [Math.min(4, Math.max(1, arg('t0', 2))), Math.min(4, Math.max(1, arg('t1', 2)))];
+
+const clients = new Map(); // ws -> {team, slot} | {spectator:true}
+let sim, state; // state: 'lobby' | 'playing'
+
+function resetSim(seed = (Math.random() * 1e9) | 0) {
+  sim = createSim({ seed, players: PLAYERS });
+  state = 'lobby';
+  for (const who of clients.values()) if (!who.spectator) sim.ai.delete(`${who.team}:${who.slot}`);
+}
+resetSim(arg('seed', 42) | 0);
+
+function claimSlot() {
+  for (let slot = 0; slot < 4; slot++) {
+    for (let team = 0; team < 2; team++) {
+      if (slot >= PLAYERS[team]) continue;
+      if (sim.ai.has(`${team}:${slot}`)) {
+        sim.ai.delete(`${team}:${slot}`);
+        return { team, slot };
+      }
+    }
+  }
+  return { spectator: true };
+}
+
+function initMsg(who) {
+  return JSON.stringify({
+    type: 'init', players: PLAYERS, you: who, state,
+    units: sim.units.map((u) => ({
+      id: u.id, team: u.team, slot: u.slot, type: u.typeKey,
+      ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.type.n,
+    })),
+  });
+}
+function lobbyMsg() {
+  const roster = [];
+  for (let team = 0; team < 2; team++)
+    for (let slot = 0; slot < PLAYERS[team]; slot++)
+      roster.push({ team, slot, human: !sim.ai.has(`${team}:${slot}`) });
+  return JSON.stringify({ type: 'lobby', state, roster });
+}
+function broadcast(msg) { for (const ws of clients.keys()) ws.send(msg); }
+
+// snapshot: [u8 0x01][u32 tick][per soldier: i16 x*100, i16 z*100, u8 face, u8 flags]
+// [per unit: i16 ax*100, i16 az*100, u8 morale, u8 files, u8 flags]
+let tick = 0;
+function snapshot() {
+  const nS = sim.soldiers.length, nU = sim.units.length;
+  const buf = new ArrayBuffer(5 + nS * 6 + nU * 7);
+  const v = new DataView(buf);
+  v.setUint8(0, 1);
+  v.setUint32(1, tick, true);
+  let o = 5;
+  for (const s of sim.soldiers) {
+    v.setInt16(o, Math.round(s.x * 100), true);
+    v.setInt16(o + 2, Math.round(s.z * 100), true);
+    v.setUint8(o + 4, Math.round(((s.face % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) / (Math.PI * 2) * 255));
+    v.setUint8(o + 5, s.state | (s.fightT > 0 ? 4 : 0) | (s.unit.broken ? 8 : 0) | (s.unit.stance ? 16 : 0));
+    o += 6;
+  }
+  for (const u of sim.units) {
+    v.setInt16(o, Math.round(u.ax * 100), true);
+    v.setInt16(o + 2, Math.round(u.az * 100), true);
+    v.setUint8(o + 4, Math.round(u.morale));
+    v.setUint8(o + 5, u.files);
+    v.setUint8(o + 6, (u.broken ? 1 : 0) | (u.stance ? 2 : 0) | (u.alive > 0 ? 4 : 0));
+    o += 7;
+  }
+  return buf;
+}
+
+Bun.serve({
+  port: PORT,
+  async fetch(req, srv) {
+    if (srv.upgrade(req)) return;
+    const url = new URL(req.url);
+    const path = url.pathname === '/' ? '/battle.html' : url.pathname;
+    const file = Bun.file(import.meta.dir + path);
+    return (await file.exists()) ? new Response(file) : new Response('not found', { status: 404 });
+  },
+  websocket: {
+    open(ws) {
+      const who = claimSlot();
+      clients.set(ws, who);
+      ws.send(initMsg(who));
+      broadcast(lobbyMsg());
+      console.log('join', who);
+    },
+    close(ws) {
+      const who = clients.get(ws);
+      clients.delete(ws);
+      if (who && !who.spectator) sim.ai.add(`${who.team}:${who.slot}`); // AI takes over
+      broadcast(lobbyMsg());
+      console.log('leave', who);
+    },
+    message(ws, raw) {
+      const who = clients.get(ws);
+      if (!who || who.spectator) return;
+      let m;
+      try { m = JSON.parse(raw); } catch { return; }
+      if (m.type === 'fight') {
+        if (sim.winner !== null) { // rematch -> fresh lobby
+          resetSim();
+          for (const [w, wh] of clients) w.send(initMsg(wh));
+          broadcast(lobbyMsg());
+        } else if (state === 'lobby') {
+          state = 'playing';
+          broadcast(JSON.stringify({ type: 'start' }));
+          console.log('FIGHT');
+        }
+        return;
+      }
+      if (state !== 'playing' || sim.winner !== null) return;
+      const owned = (m.unitIds || []).filter((i) => {
+        const u = sim.units[i];
+        return u && u.team === who.team && u.slot === who.slot;
+      });
+      if (!owned.length) return;
+      if (m.type === 'order' && m.p0 && m.p1) sim.order(owned, { x: +m.p0[0], z: +m.p0[1] }, { x: +m.p1[0], z: +m.p1[1] });
+      else if (m.type === 'stance') sim.toggleStance(owned);
+      else if (m.type === 'files') sim.adjustFiles(owned, m.d > 0 ? 1 : -1);
+    },
+  },
+});
+
+// sim @ 30Hz (only while playing), broadcast @ 12Hz (always, so the lobby shows the armies)
+const SIM_DT = 1 / 30;
+setInterval(() => { if (state === 'playing' && sim.winner === null) sim.step(SIM_DT); }, 1000 * SIM_DT);
+setInterval(() => {
+  tick++;
+  const snap = snapshot();
+  const ev = sim.drainEvents();
+  const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner });
+  for (const ws of clients.keys()) { ws.send(snap); ws.send(evMsg); }
+}, 1000 / 12);
+
+console.log(`rome-arena server on http://localhost:${PORT}  (${PLAYERS[0]}v${PLAYERS[1]}, lobby open — press FIGHT in a client to start)`);

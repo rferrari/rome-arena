@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Rome Arena — procedural map + mob demo</title>
+  <style>html,body{margin:0;height:100%;background:#111;overflow:hidden}</style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { generateArena } from './mapgen/arena.js';
+    import { loadMob, loadManifest } from './mapgen/mobs.js';
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x202030);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 500);
+    camera.position.set(0, 45, 55);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 5, 0);
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x443322, 1.2));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+    sun.position.set(30, 50, 20);
+    sun.castShadow = true;
+    scene.add(sun);
+
+    // --- procedural arena ---
+    const arena = generateArena({ seed: 42, floorRadius: 30, gates: 4, seatTiers: 5, obstacleCount: 12 });
+    scene.add(arena.group);
+    console.log('spawnPoints', arena.spawnPoints);
+
+    // --- scatter a few mobs at spawn points as a sanity check ---
+    (async () => {
+      const manifest = await loadManifest();
+      const beasts = manifest.beasts;
+      const gladiators = manifest.gladiators;
+
+      for (let i = 0; i < arena.spawnPoints.beastRing.length; i++) {
+        const spawn = arena.spawnPoints.beastRing[i];
+        const pick = beasts[i % beasts.length];
+        const { scene: mobScene } = await loadMob(pick.file);
+        mobScene.position.set(spawn.position.x, 0, spawn.position.z);
+        mobScene.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+        scene.add(mobScene);
+      }
+
+      for (let i = 0; i < arena.spawnPoints.gates.length; i++) {
+        const spawn = arena.spawnPoints.gates[i];
+        const pick = gladiators[i % gladiators.length];
+        const { scene: mobScene } = await loadMob(pick.file);
+        mobScene.position.set(spawn.position.x, 0, spawn.position.z);
+        mobScene.rotation.y = spawn.facing;
+        mobScene.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+        scene.add(mobScene);
+      }
+    })();
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    (function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    })();
+  </script>
+</body>
+</html>

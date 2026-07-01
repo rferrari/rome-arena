@@ -1,0 +1,29 @@
+{
+  "_comment": "Basic placeholder GLB mobs pulled from the DegenQuest asset library (projects/game/src/demo/public/models). All internal assets, reused across the same owner's projects. Swap for arena-specific art later.",
+  "source": "DegenQuest-v41-agent-2/projects/game/src/demo/public/models",
+  "beasts": [
+    { "file": "beasts/wolf.glb", "role": "fast/pack beast", "suggestedTier": "low" },
+    { "file": "beasts/fox.glb", "role": "fast/pack beast", "suggestedTier": "low" },
+    { "file": "beasts/goblin.glb", "role": "light skirmisher beast", "suggestedTier": "low" },
+    { "file": "beasts/spider.glb", "role": "ambush/venom beast", "suggestedTier": "mid" },
+    { "file": "beasts/stag.glb", "role": "charging beast", "suggestedTier": "mid" },
+    { "file": "beasts/alpaca.glb", "role": "filler/weak beast", "suggestedTier": "low" },
+    { "file": "beasts/orc.glb", "role": "heavy melee beast", "suggestedTier": "mid" },
+    { "file": "beasts/bull.glb", "role": "heavy charging beast", "suggestedTier": "mid" },
+    { "file": "beasts/velociraptor.glb", "role": "fast predator beast", "suggestedTier": "mid" },
+    { "file": "beasts/yeti.glb", "role": "heavy brute beast", "suggestedTier": "high" },
+    { "file": "beasts/demon.glb", "role": "elite/boss beast", "suggestedTier": "boss" },
+    { "file": "beasts/giant.glb", "role": "boss beast", "suggestedTier": "boss" }
+  ],
+  "gladiators": [
+    { "file": "gladiators/barbarian.glb", "role": "heavy melee gladiator class" },
+    { "file": "gladiators/knight.glb", "role": "heavy armored gladiator class" },
+    { "file": "gladiators/rogue.glb", "role": "light/fast gladiator class" },
+    { "file": "gladiators/rogue_hooded.glb", "role": "light/fast gladiator class variant" },
+    { "file": "gladiators/mage.glb", "role": "ranged/caster gladiator class" },
+    { "file": "gladiators/skeleton_warrior.glb", "role": "undead heavy melee, filler mob" },
+    { "file": "gladiators/skeleton_rogue.glb", "role": "undead light melee, filler mob" },
+    { "file": "gladiators/skeleton_mage.glb", "role": "undead caster, filler mob" },
+    { "file": "gladiators/skeleton_minion.glb", "role": "weak filler/swarm mob" }
+  ]
+}

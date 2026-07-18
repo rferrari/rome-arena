@@ -116,7 +116,10 @@ Bun.serve({
     const url = new URL(req.url);
     const path = url.pathname === '/' ? '/battle.html' : url.pathname;
     const file = Bun.file(import.meta.dir + path);
-    return (await file.exists()) ? new Response(file) : new Response('not found', { status: 404 });
+    // no-store so the browser never serves a stale battle.js / arena.wasm after a rebuild
+    return (await file.exists())
+      ? new Response(file, { headers: { 'Cache-Control': 'no-store' } })
+      : new Response('not found', { status: 404 });
   },
   websocket: {
     open(ws) {

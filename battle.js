@@ -342,11 +342,12 @@ const brickMesh = new THREE.InstancedMesh(
   new THREE.MeshStandardMaterial({ color: 0x9a8f7c, roughness: 1 }),
   CONFIG.render.brickCap
 );
-// jointed ragdoll bones: one box instance per bone (cap * 14 bones), scaled by
-// each bone's half-extents streamed from the physics buffer.
+// jointed ragdoll bones: one capsule instance per bone (cap * 14 bones). Base
+// capsule has radius 1 and cylinder length 2 (y: -1..1); per instance we scale
+// x/z by the bone radius and y by its half-length, and orient by the streamed quat.
 const ragdollMesh = new THREE.InstancedMesh(
-  new THREE.BoxGeometry(1, 1, 1),
-  new THREE.MeshStandardMaterial({ color: 0x6a3b2b, roughness: 0.9 }),
+  new THREE.CapsuleGeometry(1, 2, 4, 8),
+  new THREE.MeshStandardMaterial({ color: 0x8a5a3a, roughness: 0.9 }),
   CONFIG.ragdolls.cap * 14 + 16
 );
 for (const m of [brickMesh, ragdollMesh]) {
@@ -394,9 +395,9 @@ function updateProps() {
   const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
     dummy.position.set(x, y, z);
     dummy.quaternion.set(qx, qy, qz, qw);
-    if (kind === 5) { // ragdoll bone (box scaled by half-extents)
+    if (kind === 5) { // ragdoll bone: capsule, x/z = radius, y = half-length
       if (nr >= ragdollMesh.count) return;
-      dummy.scale.set(hx * 2, hy * 2, hz * 2);
+      dummy.scale.set(hx, hy, hz);
       dummy.updateMatrix(); ragdollMesh.setMatrixAt(nr++, dummy.matrix);
     } else { // brick (2) or rubble (6)
       if (nb >= brickMesh.count) return;

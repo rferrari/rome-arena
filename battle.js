@@ -14,7 +14,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a2028);
 scene.fog = new THREE.Fog(0x1a2028, 180, 380);
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 1, 600);
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);
@@ -208,6 +208,7 @@ function connect() {
         clearTimeout(fallback);
         mode = 'net';
         you = m.you;
+        if (m.render) renderer.setPixelRatio(Math.min(devicePixelRatio, m.render.pixelRatio || 2));
         buildMeta(m.units);
         setupNetReaders();
         phase = m.state;
@@ -234,29 +235,37 @@ function sendCmd(cmd) {
 }
 
 // ---------------- rendering pools (built after init) ----------------
-let soldierMesh = null;
 const dummy = new THREE.Object3D();
 dummy.rotation.order = 'YXZ';
 const catMeshes = new Map(); // unit idx -> group
 const colorKey = [];
 
-// horses (cavalry mounts + riders) and spears/pikes — shared geo/materials, rebuilt per battle
-let riderMesh = null, weaponMesh = null;
-const riderIdx = [], weaponIdx = []; // soldier i -> instance slot or -1
+// Living soldiers are little articulated humanoids built from instanced capsule
+// parts (torso, head, 2 arms, 2 legs) with procedural walk/attack — GPU-instanced
+// so the whole army stays cheap. Same capsule look as the death ragdoll.
+let hTorso = null, hHead = null, hArm = null, hLeg = null;
+const walkPhase = [];      // per soldier gait phase
+const soPrev = [];         // per soldier {x,z} for speed estimation
+const gTorso = new THREE.CapsuleGeometry(0.16, 0.30, 3, 8);
+const gHead = new THREE.SphereGeometry(0.145, 10, 8);
+const gLeg = new THREE.CapsuleGeometry(0.085, 0.34, 3, 6); gLeg.translate(0, -0.255, 0); // pivot at hip
+const gArm = new THREE.CapsuleGeometry(0.065, 0.32, 3, 6); gArm.translate(0, -0.225, 0); // pivot at shoulder
+// matrix scratch for composing root * part transforms
+const _root = new THREE.Matrix4(), _part = new THREE.Matrix4();
+const _qY = new THREE.Quaternion(), _qX = new THREE.Quaternion();
+const _pos = new THREE.Vector3(), _pos2 = new THREE.Vector3(), _one = new THREE.Vector3(1, 1, 1);
+const _YA = new THREE.Vector3(0, 1, 0), _XA = new THREE.Vector3(1, 0, 0);
+
+// spears/pikes in infantry hands
+let weaponMesh = null;
+const weaponIdx = []; // soldier i -> instance slot or -1
 const weaponLower = []; // soldier i -> seconds left holding the weapon leveled
-const riderGeo = new THREE.CapsuleGeometry(0.28, 0.6, 3, 8);
 const weaponGeo = new THREE.BoxGeometry(0.07, 0.07, 1);
 weaponGeo.translate(0, 0, 0.5); // extend forward from the hand
-const riderMat = new THREE.MeshStandardMaterial({ roughness: 0.7 });
 const weaponMat = new THREE.MeshStandardMaterial({ color: 0x8a6b3d, roughness: 0.9 });
 
 function buildRenderers() {
-  if (soldierMesh) {
-    scene.remove(soldierMesh);
-    soldierMesh.geometry.dispose();
-    soldierMesh.material.dispose();
-    soldierMesh.dispose();
-  }
+  for (const m of [hTorso, hHead, hArm, hLeg, weaponMesh]) if (m) { scene.remove(m); m.dispose(); }
   for (const m of catMeshes.values()) scene.remove(m);
   catMeshes.clear();
 
@@ -269,42 +278,30 @@ function buildRenderers() {
     if (leaderIndex[u.team] < 0 && u.type !== 'catapult') leaderIndex[u.team] = u.start + Math.floor(u.n / 2);
   }
 
-  soldierMesh = new THREE.InstancedMesh(
-    new THREE.CapsuleGeometry(0.35, 0.9, 3, 8),
-    new THREE.MeshStandardMaterial({ roughness: 0.7 }),
-    meta.nS
-  );
-  soldierMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  scene.add(soldierMesh);
-  for (let i = 0; i < meta.nS; i++) {
-    soldierMesh.setColorAt(i, TEAM_COLORS[meta.units[soldierUnitIdx[i]].team]);
-    colorKey[i] = -1;
+  const nS = meta.nS;
+  const mk = (geo, count) => {
+    const m = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ roughness: 0.75 }), count);
+    m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); m.frustumCulled = false; scene.add(m); return m;
+  };
+  hTorso = mk(gTorso, nS); hHead = mk(gHead, nS); hLeg = mk(gLeg, nS * 2); hArm = mk(gArm, nS * 2);
+  for (let i = 0; i < nS; i++) {
+    const col = TEAM_COLORS[meta.units[soldierUnitIdx[i]].team];
+    hTorso.setColorAt(i, col); hHead.setColorAt(i, col);
+    hLeg.setColorAt(i * 2, col); hLeg.setColorAt(i * 2 + 1, col);
+    hArm.setColorAt(i * 2, col); hArm.setColorAt(i * 2 + 1, col);
+    colorKey[i] = -1; walkPhase[i] = Math.random() * 6.28; soPrev[i] = null;
   }
-  soldierMesh.instanceColor.needsUpdate = true;
+  for (const m of [hTorso, hHead, hLeg, hArm]) m.instanceColor.needsUpdate = true;
 
   meta.units.forEach((u, j) => { if (u.type === 'catapult') catMeshes.set(j, makeCatapultMesh(u.team)); });
 
-  // riders on cavalry mounts, spears/pikes in infantry hands
-  if (riderMesh) { scene.remove(riderMesh); riderMesh.dispose(); }
-  if (weaponMesh) { scene.remove(weaponMesh); weaponMesh.dispose(); }
-  let nR = 0, nW = 0;
-  for (let i = 0; i < meta.nS; i++) {
-    const t = meta.units[soldierUnitIdx[i]].type;
-    riderIdx[i] = t === 'cavalry' ? nR++ : -1;
-    weaponIdx[i] = t === 'spear' || t === 'pike' ? nW++ : -1;
-  }
-  riderMesh = new THREE.InstancedMesh(riderGeo, riderMat, Math.max(1, nR));
+  // spears/pikes in infantry hands
+  let nW = 0;
+  for (let i = 0; i < nS; i++) { const t = meta.units[soldierUnitIdx[i]].type; weaponIdx[i] = (t === 'spear' || t === 'pike') ? nW++ : -1; }
   weaponMesh = new THREE.InstancedMesh(weaponGeo, weaponMat, Math.max(1, nW));
-  for (const m of [riderMesh, weaponMesh]) {
-    m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    m.frustumCulled = false;
-    dummy.position.set(0, -10, 0); dummy.rotation.set(0, 0, 0); dummy.scale.setScalar(0); dummy.updateMatrix();
-    for (let i = 0; i < m.count; i++) m.setMatrixAt(i, dummy.matrix);
-    scene.add(m);
-  }
-  for (let i = 0; i < meta.nS; i++)
-    if (riderIdx[i] >= 0) riderMesh.setColorAt(riderIdx[i], TEAM_COLORS[meta.units[soldierUnitIdx[i]].team]);
-  if (riderMesh.instanceColor) riderMesh.instanceColor.needsUpdate = true;
+  weaponMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); weaponMesh.frustumCulled = false;
+  for (let i = 0; i < weaponMesh.count; i++) weaponMesh.setMatrixAt(i, _zeroM);
+  scene.add(weaponMesh);
 }
 
 function makeCatapultMesh(team) {
@@ -337,10 +334,12 @@ const flyingArrows = [];
 // ---------------- physics props: fort bricks + ragdoll corpses ----------------
 // One instanced mesh each, driven by full 3D transforms (pos+quat) from the sim
 // (solo: read the arena buffer directly; net: the decoded snapshot props).
+// pools sized to the largest tier so any server tier fits (unused instances hidden)
+const BRICK_CAP = 24000, RAGDOLL_BONE_CAP = 128 * 14 + 16;
 const brickMesh = new THREE.InstancedMesh(
   new THREE.BoxGeometry(1, 1, 1),
   new THREE.MeshStandardMaterial({ color: 0x9a8f7c, roughness: 1 }),
-  CONFIG.render.brickCap
+  BRICK_CAP
 );
 // jointed ragdoll bones: one capsule instance per bone (cap * 14 bones). Base
 // capsule has radius 1 and cylinder length 2 (y: -1..1); per instance we scale
@@ -348,7 +347,7 @@ const brickMesh = new THREE.InstancedMesh(
 const ragdollMesh = new THREE.InstancedMesh(
   new THREE.CapsuleGeometry(1, 2, 4, 8),
   new THREE.MeshStandardMaterial({ color: 0x8a5a3a, roughness: 0.9 }),
-  CONFIG.ragdolls.cap * 14 + 16
+  RAGDOLL_BONE_CAP
 );
 for (const m of [brickMesh, ragdollMesh]) {
   m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -623,8 +622,21 @@ addEventListener('pointerup', (e) => {
 
 // ---------------- per-frame instance update ----------------
 const rs = {}; // reusable readSoldier output
+const _zeroM = new THREE.Matrix4().makeScale(0, 0, 0);
+function hideHuman(i) {
+  hTorso.setMatrixAt(i, _zeroM); hHead.setMatrixAt(i, _zeroM);
+  hLeg.setMatrixAt(i * 2, _zeroM); hLeg.setMatrixAt(i * 2 + 1, _zeroM);
+  hArm.setMatrixAt(i * 2, _zeroM); hArm.setMatrixAt(i * 2 + 1, _zeroM);
+}
+// place one body part: world = root * translate(o) * rotX(swing)
+function placePart(mesh, idx, ox, oy, oz, swingX) {
+  _qX.setFromAxisAngle(_XA, swingX);
+  _part.compose(_pos.set(ox, oy, oz), _qX, _one);
+  _part.premultiply(_root);
+  mesh.setMatrixAt(idx, _part);
+}
 function updateInstances(dt) {
-  if (!soldierMesh) return;
+  if (!hTorso) return;
   for (const c of unitCentroids) if (c) { c.x = 0; c.z = 0; c.n = 0; }
   meta.units.forEach((u, j) => { unitCentroids[j] = unitCentroids[j] || {}; unitCentroids[j].x = 0; unitCentroids[j].z = 0; unitCentroids[j].n = 0; });
 
@@ -635,73 +647,66 @@ function updateInstances(dt) {
     const isCav = u.type === 'cavalry';
 
     const lt = i === leaderIndex[0] ? 0 : i === leaderIndex[1] ? 1 : -1;
-    if (lt >= 0 && leaders[lt]) { // this soldier is rendered as the animated champion
+    if (lt >= 0 && leaders[lt]) { // rendered as the animated GLB champion instead
       leaderState[lt] = { x: rs.x, z: rs.z, face: rs.face, state: rs.state };
-      dummy.position.set(0, -10, 0); dummy.scale.setScalar(0); dummy.rotation.set(0, 0, 0);
-      dummy.updateMatrix(); soldierMesh.setMatrixAt(i, dummy.matrix);
+      hideHuman(i);
+      const wl = weaponIdx[i]; if (wl >= 0) weaponMesh.setMatrixAt(wl, _zeroM);
       continue;
     }
 
-    if (rs.state !== 0) { dummy.position.set(0, -10, 0); dummy.scale.setScalar(0); dummy.rotation.set(0, 0, 0); } // dead: hidden; the jointed ragdoll renders the corpse
-    else {
-      const c = unitCentroids[j];
-      c.x += rs.x; c.z += rs.z; c.n++;
-      if (isCav) {
-        dummy.position.set(rs.x, 0.55, rs.z);
-        dummy.rotation.set(Math.PI / 2, rs.face, 0);
-        dummy.scale.set(1.2, 1.4, 1.2);
-      } else {
-        dummy.position.set(rs.x, 0.8, rs.z);
-        dummy.rotation.set(0, rs.face, 0);
-        dummy.scale.set(1, 1, 1);
-      }
-      if (rs.fighting && Math.random() < dt * 1.2) spawnParticles(rs.x, 1.2, rs.z, 2, 0xaa1515, 3, 0.5);
+    if (rs.state !== 0) { // dead: hide the humanoid; the jointed ragdoll shows the corpse
+      hideHuman(i);
+      const wl = weaponIdx[i]; if (wl >= 0) weaponMesh.setMatrixAt(wl, _zeroM);
+      continue;
     }
-    dummy.updateMatrix();
-    soldierMesh.setMatrixAt(i, dummy.matrix);
 
-    const ri = riderIdx[i];
-    if (ri >= 0) {
-      if (rs.state !== 0) dummy.scale.setScalar(0);
-      else {
-        dummy.position.set(rs.x, 1.45, rs.z);
-        dummy.rotation.set(0, rs.face, 0);
-        dummy.scale.set(0.9, 0.9, 0.9);
-      }
-      dummy.updateMatrix();
-      riderMesh.setMatrixAt(ri, dummy.matrix);
-    }
+    const c = unitCentroids[j];
+    c.x += rs.x; c.z += rs.z; c.n++;
+
+    // gait: advance a walk phase by movement speed; swing legs/arms accordingly
+    const pv = soPrev[i] || (soPrev[i] = { x: rs.x, z: rs.z });
+    const spd = Math.hypot(rs.x - pv.x, rs.z - pv.z) / Math.max(dt, 1e-3);
+    pv.x = rs.x; pv.z = rs.z;
+    const amp = Math.min(1, spd / 2.5);
+    walkPhase[i] += (3 + spd * 1.5) * dt;
+    const sw = Math.sin(walkPhase[i]) * 0.7 * amp;
+    const bob = Math.abs(Math.sin(walkPhase[i])) * 0.04 * amp;
+    const sc = isCav ? 1.18 : 1.0;
+
+    _qY.setFromAxisAngle(_YA, rs.face);
+    _root.compose(_pos.set(rs.x, 0, rs.z), _qY, _pos2.set(sc, sc, sc));
+    placePart(hTorso, i, 0, 0.98 + bob, 0, 0);
+    placePart(hHead, i, 0, 1.42 + bob, 0, 0);
+    placePart(hLeg, i * 2, 0.09, 0.74, 0, sw);
+    placePart(hLeg, i * 2 + 1, -0.09, 0.74, 0, -sw);
+    const rArm = rs.fighting ? -1.3 : sw * 0.8;       // right arm strikes when fighting
+    placePart(hArm, i * 2, 0.24, 1.2, 0, -sw * 0.8);
+    placePart(hArm, i * 2 + 1, -0.24, 1.2, 0, rArm);
+    if (rs.fighting && Math.random() < dt * 1.2) spawnParticles(rs.x, 1.2, rs.z, 2, 0xaa1515, 3, 0.5);
+
     const wi = weaponIdx[i];
     if (wi >= 0) {
-      if (rs.state !== 0) dummy.scale.setScalar(0);
-      else {
-        // stay leveled a moment after each swing so pikes don't bob between attacks
-        weaponLower[i] = rs.fighting ? 1.5 : Math.max(0, (weaponLower[i] || 0) - dt);
-        dummy.position.set(rs.x + Math.sin(rs.face) * 0.25, 1.15, rs.z + Math.cos(rs.face) * 0.25);
-        dummy.rotation.set(rs.stance || weaponLower[i] > 0 ? -0.12 : -0.95, rs.face, 0);
-        dummy.scale.set(1, 1, TYPES[u.type].range + 0.8);
-      }
+      weaponLower[i] = rs.fighting ? 1.5 : Math.max(0, (weaponLower[i] || 0) - dt);
+      dummy.position.set(rs.x + Math.sin(rs.face) * 0.25, 1.15, rs.z + Math.cos(rs.face) * 0.25);
+      dummy.rotation.set(rs.stance || weaponLower[i] > 0 ? -0.12 : -0.95, rs.face, 0);
+      dummy.scale.set(1, 1, TYPES[u.type].range + 0.8);
       dummy.updateMatrix();
       weaponMesh.setMatrixAt(wi, dummy.matrix);
     }
 
-    // color only when state changes (death blood burst piggybacks here)
-    const key = rs.state | (rs.broken ? 4 : 0) | (selected.has(j) ? 8 : 0);
+    // recolor parts only when team/broken/selected state changes
+    const key = (rs.broken ? 4 : 0) | (selected.has(j) ? 8 : 0);
     if (colorKey[i] !== key) {
-      if (rs.state === 1 && (colorKey[i] & 3) === 0) spawnParticles(rs.x, 1, rs.z, 6, 0x8f1a1a, 4, 0.8);
       colorKey[i] = key;
       const base = TEAM_COLORS[u.team];
-      soldierMesh.setColorAt(i,
-        rs.state !== 0 ? DEAD_COLOR
-        : rs.broken ? base.clone().lerp(WHITE, 0.65)
-        : selected.has(j) ? base.clone().lerp(WHITE, 0.45)
-        : base);
+      const col = rs.broken ? base.clone().lerp(WHITE, 0.6) : selected.has(j) ? base.clone().lerp(WHITE, 0.45) : base;
+      hTorso.setColorAt(i, col); hHead.setColorAt(i, col);
+      hLeg.setColorAt(i * 2, col); hLeg.setColorAt(i * 2 + 1, col);
+      hArm.setColorAt(i * 2, col); hArm.setColorAt(i * 2 + 1, col);
       colorDirty = true;
     }
   }
-  if (colorDirty) soldierMesh.instanceColor.needsUpdate = true;
-  soldierMesh.instanceMatrix.needsUpdate = true;
-  riderMesh.instanceMatrix.needsUpdate = true;
+  for (const m of [hTorso, hHead, hLeg, hArm]) { if (colorDirty) m.instanceColor.needsUpdate = true; m.instanceMatrix.needsUpdate = true; }
   weaponMesh.instanceMatrix.needsUpdate = true;
 
   // place & animate each team's champion at its leader soldier; walk when moving,

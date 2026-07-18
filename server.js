@@ -5,15 +5,21 @@
 // JSON events/stats.
 import { createSim } from './sim.js';
 import { createArena } from './physics/arena_api.js';
-import { CONFIG } from './physics/config.js';
+import { CONFIG, setTier } from './physics/config.js';
 
 const arg = (name, def) => {
   const i = process.argv.indexOf(`--${name}`);
   return i > -1 ? +process.argv[i + 1] : def;
 };
+const argStr = (name, def) => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i > -1 ? process.argv[i + 1] : def;
+};
 const PORT = arg('port', 8321);
-const PLAYERS = [Math.min(4, Math.max(1, arg('t0', 2))), Math.min(4, Math.max(1, arg('t1', 2)))];
-const FORT = arg('fort', 0) > 0; // --fort 1 spawns a central destructible castle
+const TIER = setTier(argStr('tier', CONFIG.tier)); // low|mid|high|ultra scales the whole scene
+// tier sets the default army sizes; --t0/--t1 still override
+const PLAYERS = [Math.min(4, Math.max(1, arg('t0', CONFIG.players[0]))), Math.min(4, Math.max(1, arg('t1', CONFIG.players[1])))];
+const FORT = arg('fort', 0) > 0; // --fort 1 spawns per-team destructible castles
 
 const clients = new Map(); // ws -> {team, slot} | {spectator:true}
 let sim, state; // state: 'lobby' | 'playing'
@@ -42,6 +48,7 @@ function claimSlot() {
 function initMsg(who) {
   return JSON.stringify({
     type: 'init', players: PLAYERS, you: who, state,
+    tier: CONFIG.tier, render: CONFIG.render, // so the client matches the server's quality tier
     units: sim.units.map((u) => ({
       id: u.id, team: u.team, slot: u.slot, type: u.typeKey,
       ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.type.n,
@@ -177,4 +184,4 @@ setInterval(() => {
   for (const ws of clients.keys()) { ws.send(snap); ws.send(evMsg); }
 }, 1000 / 12);
 
-console.log(`rome-arena server on http://localhost:${PORT}  (${PLAYERS[0]}v${PLAYERS[1]}, lobby open — press FIGHT in a client to start)`);
+console.log(`rome-arena server on http://localhost:${PORT}  (tier=${TIER}, ${PLAYERS[0]}v${PLAYERS[1]}${FORT ? ', forts' : ''}, lobby open — press FIGHT in a client to start)`);

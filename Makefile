@@ -1,11 +1,16 @@
 PORT ?= 8321
-T0 ?= 2
-T1 ?= 2
 SEED ?= 42
 FORT ?= 0
+TIER ?= mid
 
-start: ## run the multiplayer battle server (http + websocket); FORT=1 adds a central castle
-	bun server.js --port $(PORT) --t0 $(T0) --t1 $(T1) --seed $(SEED) --fort $(FORT)
+# TIER (low|mid|high|ultra) scales army size, ragdolls, castle detail + render quality.
+# Force the NVIDIA GPU in the BROWSER you open (Linux/Optimus) e.g.:
+#   __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia google-chrome http://localhost:8321
+start: ## run the battle server; TIER=low|mid|high|ultra, FORT=1 adds castles
+	bun server.js --port $(PORT) --tier $(TIER) --seed $(SEED) --fort $(FORT)
+
+stress: ## max-scale stress test: ultra tier + castles
+	bun server.js --port $(PORT) --tier ultra --seed $(SEED) --fort 1
 
 test: ## headless sim smoke test — asserts combat mechanics fire
 	bun test_sim.js

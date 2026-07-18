@@ -377,17 +377,19 @@ static void build_tower(float cx, float cz, float radius, int sides, int courses
   }
 }
 
-// A square castle centered at (cx,cz): curtain walls (gate gap in the front, -z
-// side), four corner towers, and a central keep. Returns the brick count.
+// A square castle centered at (cx,cz): curtain walls with a gate gap, four corner
+// towers, and a central keep. gateDir picks which z-side holds the gate (-1 = -z,
+// +1 = +z) so each team's fort can open toward the enemy. Returns the brick count.
 EMSCRIPTEN_KEEPALIVE
-int arena_build_fort(float cx, float cz, float S, int courses) {
+int arena_build_fort(float cx, float cz, float S, int courses, int gateDir) {
   int before = g_count;
   const float gate = 6.0f, tr = 2.2f, in = 2.6f; // inset walls so corner towers fill the gaps
-  build_wall(cx - S + in, cz - S, cx - gate * 0.5f, cz - S, courses, 1.0f); // front-left
-  build_wall(cx + gate * 0.5f, cz - S, cx + S - in, cz - S, courses, 1.0f); // front-right
-  build_wall(cx - S + in, cz + S, cx + S - in, cz + S, courses, 1.0f);      // back
-  build_wall(cx - S, cz - S + in, cx - S, cz + S - in, courses, 1.0f);      // left
-  build_wall(cx + S, cz - S + in, cx + S, cz + S - in, courses, 1.0f);      // right
+  const float gz = cz + gateDir * S, bz = cz - gateDir * S; // gated wall / solid back wall
+  build_wall(cx - S + in, gz, cx - gate * 0.5f, gz, courses, 1.0f); // gate wall, left of gap
+  build_wall(cx + gate * 0.5f, gz, cx + S - in, gz, courses, 1.0f); // gate wall, right of gap
+  build_wall(cx - S + in, bz, cx + S - in, bz, courses, 1.0f);      // solid rear wall
+  build_wall(cx - S, cz - S + in, cx - S, cz + S - in, courses, 1.0f); // left
+  build_wall(cx + S, cz - S + in, cx + S, cz + S - in, courses, 1.0f); // right
   build_tower(cx - S, cz - S, tr, 9, courses + 2);
   build_tower(cx + S, cz - S, tr, 9, courses + 2);
   build_tower(cx - S, cz + S, tr, 9, courses + 2);

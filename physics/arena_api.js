@@ -31,7 +31,7 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     contactsPtr: c('arena_contacts_ptr', 'number', []),
     raycast: c('arena_raycast', 'number', ['number', 'number', 'number', 'number', 'number', 'number']),
     ragdoll: c('arena_ragdoll', null, ['number', 'number', 'number', 'number', 'number']),
-    buildFort: c('arena_build_fort', 'number', ['number', 'number', 'number', 'number']),
+    buildFort: c('arena_build_fort', 'number', ['number', 'number', 'number', 'number', 'number']),
     sync: c('arena_sync', null, []),
   };
 
@@ -69,8 +69,8 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     raycast: (x0, y0, z0, x1, y1, z1) => fn.raycast(x0, y0, z0, x1, y1, z1),
     // turn soldier body `h` into a toppling corpse flung at velocity (vx,vy,vz).
     ragdoll: (h, vx, vy, vz, spin = 3) => fn.ragdoll(h, vx, vy, vz, spin),
-    // build a castle (walls/towers/keep) centered at (cx,cz); returns brick count.
-    buildFort: (cx, cz, halfSize, courses = 5) => fn.buildFort(cx, cz, halfSize, courses),
+    // build a castle centered at (cx,cz); gateDir picks the gate's z-side (-1/+1).
+    buildFort: (cx, cz, halfSize, courses = 5, gateDir = -1) => fn.buildFort(cx, cz, halfSize, courses, gateDir),
     // fill the transform buffer without stepping (e.g. show the fresh fort at lobby).
     sync: () => fn.sync(),
   };

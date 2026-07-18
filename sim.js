@@ -3,6 +3,7 @@
 // send orders, so there is no lockstep desync class of bugs.
 
 import { CONFIG } from './physics/config.js';
+import { createFlowField } from './physics/flowfield.js';
 
 export const FIELD_W = 200, FIELD_D = 140;
 export const SPACING = 1.3;
@@ -105,27 +106,57 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     return u;
   }
 
-  // deployment: per player slot, 4 melee units front, archer+cavalry behind, catapult rear
+  // deployment: per player slot, 4 melee units front, archer+cavalry behind, catapult
+  // rear. In fort mode armies form up further forward so each team's castle sits
+  // behind them at ±backZ.
+  const zM = fort ? 30 : 42, zB = fort ? 38 : 52, zC = fort ? 46 : 60;
   for (let team = 0; team < 2; team++) {
     const dir = team === 0 ? 1 : -1, facing = team === 0 ? Math.PI : 0;
     const blockW = Math.min(46, (FIELD_W - 10) / players[team]);
     for (let p = 0; p < players[team]; p++) {
       const bx = (p + 0.5 - players[team] / 2) * blockW;
       COMP_FRONT.forEach((t, i) =>
-        makeUnit(team, p, t, bx + (i + 0.5 - COMP_FRONT.length / 2) * (blockW / COMP_FRONT.length), dir * 42, facing));
+        makeUnit(team, p, t, bx + (i + 0.5 - COMP_FRONT.length / 2) * (blockW / COMP_FRONT.length), dir * zM, facing));
       COMP_BACK.forEach((t, i) =>
-        makeUnit(team, p, t, bx + (i + 0.5 - COMP_BACK.length / 2) * (blockW / COMP_BACK.length), dir * 52, facing));
-      makeUnit(team, p, 'catapult', bx, dir * 60, facing);
+        makeUnit(team, p, t, bx + (i + 0.5 - COMP_BACK.length / 2) * (blockW / COMP_BACK.length), dir * zB, facing));
+      makeUnit(team, p, 'catapult', bx, dir * zC, facing);
       sim.ai.add(`${team}:${p}`); // owners claim their slot; unclaimed = AI
     }
   }
 
-  // optional central fortress to fight over / bombard (default off so open-field
-  // test_sim is unaffected). Bricks are pure physics — no per-brick JS logic.
+  // Two castles (one per team at its backline), gates facing the enemy. Each team's
+  // stance (CONFIG.fort.stance) decides whether it holds its own fort or storms the
+  // enemy's; soldiers path there via a flow field. Default off so open-field
+  // test_sim is unaffected. Bricks are pure physics — no per-brick JS logic.
+  let nav = null, fortCenter = null, teamStance = null, navT = 0;
   if (fort) {
     const F = CONFIG.fort;
-    sim.fortBricks = arena.buildFort(F.center[0], F.center[1], F.halfSize, F.courses);
-    arena.sync(); // fill the transform buffer so the lobby/init shows the fresh fort
+    fortCenter = [[0, F.backZ], [0, -F.backZ]];   // team 0 at +z, team 1 at -z
+    teamStance = F.stance;
+    arena.buildFort(0, F.backZ, F.halfSize, F.courses, -1);  // gate faces -z (toward centre)
+    arena.buildFort(0, -F.backZ, F.halfSize, F.courses, +1); // gate faces +z (toward centre)
+    arena.sync(); // fill the transform buffer so the lobby/init shows the fresh forts
+    nav = [createFlowField(FIELD_W, FIELD_D, F.navCell), createFlowField(FIELD_W, FIELD_D, F.navCell)];
+    sim.fortCenter = fortCenter;
+    recomputeNav();
+  }
+
+  // Rebuild each fort's flow field from the currently standing bricks (goal = just
+  // inside that fort's gate). Recomputed periodically so boulder breaches open paths.
+  function recomputeNav() {
+    const xf = arena.transforms, ST = arena.XF_STRIDE, n = arena.count, hs = CONFIG.fort.halfSize;
+    for (let f = 0; f < 2; f++) {
+      nav[f].clearBlocked();
+      for (let h = 0; h < n; h++) { const b = h * ST; if (xf[b + 7] === 2 && xf[b + 1] > 0.35) nav[f].blockWorld(xf[b], xf[b + 2]); }
+      const fz = fortCenter[f][1], sgn = fz >= 0 ? 1 : -1;
+      nav[f].compute(0, fz - sgn * (hs - 2)); // goal = courtyard just inside the gate
+    }
+  }
+  function moveToSlot(s, u, speedMult, dt) {
+    slotPos(u, s.slot, slotP);
+    const d = Math.hypot(slotP.x - s.x, slotP.z - s.z);
+    if (d > 0.15) { s.face = Math.atan2(slotP.x - s.x, slotP.z - s.z); setVel(s, slotP.x, slotP.z, s.speed * speedMult, dt); }
+    else { s.face = u.facing; setStop(s); }
   }
 
   // ---- spatial grid ----
@@ -296,6 +327,9 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     for (const s of soldiers) if (s.state === 0) { s.unit.sx += s.x; s.unit.sz += s.z; }
     for (const u of units) if (u.alive > 0) { u.cx = u.sx / u.alive; u.cz = u.sz / u.alive; }
 
+    // refresh pathfinding periodically so wall breaches open new routes
+    if (nav) { navT -= dt; if (navT <= 0) { navT = 1; recomputeNav(); } }
+
     // Decide each soldier's desired velocity (+ melee) from last tick's positions,
     // writing intents into the shared buffer. box3d then integrates movement AND
     // resolves crowd separation / boundary in arena.step — no hand-rolled push-apart.
@@ -326,10 +360,19 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
         } else setVel(s, enemy.x, enemy.z, s.speed * speedMult, dt);
       } else {
         if (T.ranged) fireArrowMaybe(s, dt);
-        slotPos(u, s.slot, slotP);
-        const d = Math.hypot(slotP.x - s.x, slotP.z - s.z);
-        if (d > 0.15) { s.face = Math.atan2(slotP.x - s.x, slotP.z - s.z); setVel(s, slotP.x, slotP.z, s.speed * speedMult, dt); }
-        else { s.face = u.facing; setStop(s); }
+        // No enemy nearby: in fort mode, navigate the flow field toward the
+        // objective (defend own fort / assault the enemy's); else hold formation.
+        if (nav && T !== TYPES.catapult) {
+          const gf = teamStance[u.team] === 'attack' ? 1 - u.team : u.team; // target fort
+          const fc = fortCenter[gf];
+          const insideTarget = Math.hypot(s.x - fc[0], s.z - fc[1]) < CONFIG.fort.halfSize - 1;
+          if (teamStance[u.team] === 'defend' && insideTarget) { s.face = u.facing; setStop(s); } // hold the courtyard
+          else {
+            const dir = nav[gf].sample(s.x, s.z);
+            if (dir) { s.face = Math.atan2(dir.x, dir.z); setVel(s, s.x + dir.x, s.z + dir.z, s.speed * speedMult, dt); }
+            else moveToSlot(s, u, speedMult, dt); // at/near goal — brawl in formation
+          }
+        } else moveToSlot(s, u, speedMult, dt);
       }
     }
 

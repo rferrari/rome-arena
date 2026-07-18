@@ -14,7 +14,18 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a2028);
 scene.fog = new THREE.Fog(0x1a2028, 180, 380);
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 1, 600);
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+// Prefer the discrete (NVIDIA) GPU, but fall back gracefully if the driver rejects
+// that context attribute or WebGL2 is blocked (hardware accel off).
+function makeRenderer() {
+  for (const attrs of [{ antialias: true, powerPreference: 'high-performance' }, { antialias: true }, {}]) {
+    try { return new THREE.WebGLRenderer(attrs); } catch (e) { console.warn('WebGL attempt failed:', attrs, e.message); }
+  }
+  document.body.innerHTML = '<div style="color:#eee;font-family:system-ui;padding:24px;line-height:1.6">' +
+    '<h2>WebGL2 unavailable</h2>Enable hardware acceleration in your browser and check <b>chrome://gpu</b>.<br>' +
+    'On Linux/Optimus, launching Chrome with the NVIDIA PRIME env vars can also fix (or, if it breaks it, remove) this.</div>';
+  throw new Error('WebGL2 context could not be created');
+}
+const renderer = makeRenderer();
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);

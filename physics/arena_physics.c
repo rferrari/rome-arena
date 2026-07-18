@@ -15,6 +15,11 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <math.h>
+#include "human.h" // box3d's jointed 14-bone ragdoll (shared/human.c)
+
+// human.c's RandomFloat helpers (utils.h) need this global, normally in utils.c.
+// Define it here so we don't pull in utils.c (which drags in threading code).
+uint32_t g_randomSeed = 12345u;
 
 // ---- soldier capsule dimensions (upright, planar battle) ----
 #define SOL_RADIUS 0.35f
@@ -55,6 +60,15 @@ static int g_contactCount = 0;
 
 static void write_transforms(void); // defined after arena_step
 static void do_breach(float x, float y, float z, float r); // boulder-blasts standing walls to rubble
+
+// ---- jointed ragdoll pool (real box3d Humans, spawned on death, capped) ----
+#define RAGDOLL_MAX 128
+static Human g_rag[RAGDOLL_MAX];
+static float g_ragBorn[RAGDOLL_MAX];
+static float g_ragExt[RAGDOLL_MAX][bone_count][3]; // per-bone render half-extents
+static int g_ragCap = 0, g_ragNext = 0;
+static float g_ragLife = 5.0f, g_ragTime = 0.0f;
+static int g_renderCount = 0; // bodies + active ragdoll bones written to the buffer
 
 // ---------------- Phase 1 smoke API (unchanged) ----------------
 static b3BodyId g_box;
@@ -120,6 +134,47 @@ void arena_reset(int seed, int maxBodies) {
   g_intent = (float*) calloc(g_cap * 2, sizeof(float));
   g_contacts = (int*) calloc(MAX_CONTACTS * 2, sizeof(int));
   g_ext = (float*) calloc(g_cap * 3, sizeof(float));
+  // old world's ragdoll bodies are gone with it — just forget them
+  for (int i = 0; i < RAGDOLL_MAX; i++) g_rag[i].isSpawned = false;
+  g_ragNext = 0; g_ragTime = 0.0f; g_renderCount = 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void arena_set_ragdoll_params(int cap, float life) {
+  g_ragCap = cap > RAGDOLL_MAX ? RAGDOLL_MAX : (cap < 0 ? 0 : cap);
+  g_ragLife = life;
+}
+
+// Spawn a jointed ragdoll at (x,y,z) flung at (vx,vy,vz). Pooled + round-robin
+// recycled at g_ragCap, so the body budget is bounded. Bones are refiltered so
+// corpses fall on the ground/rubble but never block the living battle.
+EMSCRIPTEN_KEEPALIVE
+void arena_spawn_ragdoll(float x, float y, float z, float vx, float vy, float vz) {
+  if (g_ragCap <= 0) return;
+  int slot = g_ragNext % g_ragCap;
+  g_ragNext++;
+  if (g_rag[slot].isSpawned) DestroyHuman(&g_rag[slot]);
+  Human* h = &g_rag[slot];
+  for (int i = 0; i < (int) sizeof(Human); i++) ((char*) h)[i] = 0; // zero-init (required)
+  CreateHuman(h, g_world, (b3Pos){ x, y, z }, 0.1f, 0.0f, 0.0f, slot + 1, (void*)(intptr_t)(-1), false);
+  Human_SetVelocity(h, (b3Vec3){ vx, vy, vz });
+  Human_ApplyRandomAngularImpulse(h, 8.0f);
+  g_ragBorn[slot] = g_ragTime;
+  for (int b = 0; b < bone_count; b++) {
+    g_ragExt[slot][b][0] = 0;
+    b3BodyId id = h->bones[b].bodyId;
+    if (!b3Body_IsValid(id)) continue;
+    b3ShapeId sh;
+    if (b3Body_GetShapes(id, &sh, 1) != 1) continue;
+    b3Filter f = { CAT_RAGDOLL, CAT_STATIC | CAT_BRICK, -(slot + 1) };
+    b3Shape_SetFilter(sh, f, false);
+    if (b3Shape_GetType(sh) == b3_capsuleShape) {
+      b3Capsule c = b3Shape_GetCapsule(sh);
+      float dx = c.center2.x - c.center1.x, dy = c.center2.y - c.center1.y, dz = c.center2.z - c.center1.z;
+      float len = sqrtf(dx * dx + dy * dy + dz * dz);
+      g_ragExt[slot][b][0] = c.radius; g_ragExt[slot][b][1] = len * 0.5f + c.radius; g_ragExt[slot][b][2] = c.radius;
+    } else { g_ragExt[slot][b][0] = 0.12f; g_ragExt[slot][b][1] = 0.14f; g_ragExt[slot][b][2] = 0.12f; }
+  }
 }
 
 // push a body and record its render half-extents in one go
@@ -241,6 +296,7 @@ void arena_remove(int h) {
 }
 
 EMSCRIPTEN_KEEPALIVE int arena_body_count(void) { return g_count; }
+EMSCRIPTEN_KEEPALIVE int arena_render_count(void) { return g_renderCount; } // bodies + ragdoll bones
 EMSCRIPTEN_KEEPALIVE float* arena_transform_ptr(void) { return g_xf; }
 EMSCRIPTEN_KEEPALIVE float* arena_intent_ptr(void) { return g_intent; }
 
@@ -275,14 +331,20 @@ void arena_step(float dt, int subSteps) {
     }
   }
 
+  g_ragTime += dt; // age ragdolls; recycle expired ones
+  for (int i = 0; i < g_ragCap; i++)
+    if (g_rag[i].isSpawned && g_ragTime - g_ragBorn[i] > g_ragLife) { DestroyHuman(&g_rag[i]); g_rag[i].isSpawned = false; }
+
   write_transforms();
 }
 
 // Write every live body's transform (pos + quat), kind flag, and render
-// half-extents into the shared buffer. Split out so it can also run without a
-// physics step (arena_sync), e.g. to fill the buffer for the lobby / snapshot init.
+// half-extents into the shared buffer, then append the active ragdoll bones after
+// them (KIND_RAGDOLL). g_renderCount covers both. Split out so it can also run
+// without a physics step (arena_sync), e.g. to fill the buffer for the lobby.
 static void write_transforms(void) {
-  for (int h = 0; h < g_count; h++) {
+  int rc = 0;
+  for (int h = 0; h < g_count; h++, rc++) {
     float* o = g_xf + h * XF_STRIDE;
     if (g_kind[h] == KIND_DEAD) { o[7] = KIND_DEAD; continue; }
     b3WorldTransform t = b3Body_GetTransform(g_bodies[h]);
@@ -291,6 +353,22 @@ static void write_transforms(void) {
     o[7] = (float) g_kind[h];
     o[8] = g_ext[h * 3]; o[9] = g_ext[h * 3 + 1]; o[10] = g_ext[h * 3 + 2];
   }
+  for (int i = 0; i < g_ragCap; i++) {
+    if (!g_rag[i].isSpawned) continue;
+    for (int b = 0; b < bone_count; b++) {
+      if (g_ragExt[i][b][0] == 0 || rc >= g_cap) continue;
+      b3BodyId id = g_rag[i].bones[b].bodyId;
+      if (!b3Body_IsValid(id)) continue;
+      float* o = g_xf + rc * XF_STRIDE;
+      b3WorldTransform t = b3Body_GetTransform(id);
+      o[0] = (float) t.p.x; o[1] = (float) t.p.y; o[2] = (float) t.p.z;
+      o[3] = t.q.v.x; o[4] = t.q.v.y; o[5] = t.q.v.z; o[6] = t.q.s;
+      o[7] = (float) KIND_RAGDOLL;
+      o[8] = g_ragExt[i][b][0]; o[9] = g_ragExt[i][b][1]; o[10] = g_ragExt[i][b][2];
+      rc++;
+    }
+  }
+  g_renderCount = rc;
 }
 
 // Fill the transform buffer without advancing physics (fresh fort at lobby time).
@@ -329,26 +407,6 @@ int arena_raycast(float x0, float y0, float z0, float x1, float y1, float z1) {
   b3RayResult r = b3World_CastRayClosest(g_world, origin, translation, b3DefaultQueryFilter());
   if (!r.hit) return -1;
   return (int)(intptr_t) b3Body_GetUserData(b3Shape_GetBody(r.shapeId));
-}
-
-// Turn a soldier's capsule into a toppling corpse: unlock rotation, refilter so it
-// only collides with the world/rubble (never the living), and fling it. Reuses the
-// existing body, so no new bodies and no ragdoll body-budget growth.
-EMSCRIPTEN_KEEPALIVE
-void arena_ragdoll(int h, float vx, float vy, float vz, float spin) {
-  if (h < 0 || h >= g_count || g_kind[h] == KIND_DEAD) return;
-  b3BodyId id = g_bodies[h];
-  b3MotionLocks freeLocks = { 0 };
-  b3Body_SetMotionLocks(id, freeLocks);
-  b3ShapeId sh;
-  if (b3Body_GetShapes(id, &sh, 1) == 1) {
-    b3Filter f = { CAT_RAGDOLL, CAT_STATIC | CAT_BRICK, 0 };
-    b3Shape_SetFilter(sh, f, true);
-  }
-  b3Body_SetAwake(id, true);
-  b3Body_SetLinearVelocity(id, (b3Vec3){ vx, vy, vz });
-  b3Body_SetAngularVelocity(id, (b3Vec3){ vz * spin, spin, -vx * spin });
-  g_kind[h] = KIND_RAGDOLL;
 }
 
 // ---- destructible masonry (ported from box3d samples sample_siege/sample_city) ----

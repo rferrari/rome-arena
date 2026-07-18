@@ -46,6 +46,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
   if (!arena) throw new Error('createSim requires a physics arena (see physics/arena_api.js)');
   arena.reset(seed >>> 0);            // fresh box3d world + body tables
   arena.createGround(FIELD_W, FIELD_D); // static floor + perimeter walls
+  arena.setRagdollParams(CONFIG.ragdolls.cap, CONFIG.ragdolls.lifetime);
   const rng = mulberry32(seed);
   const units = [], soldiers = [], projectiles = [], arrows = [];
   const boulders = [];                 // live catapult rocks: { h, born, hits }
@@ -196,11 +197,13 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     s.unit.alive--;
     s.unit.morale = Math.max(0, s.unit.morale - 4);
     if (s.h >= 0) {
-      soldierByHandle.delete(s.h); // no longer a melee/boulder victim
-      // topple the corpse: knocked backward from its facing, with some spin/lift
+      soldierByHandle.delete(s.h);          // no longer a melee/boulder victim
+      arena.remove(s.h);                    // drop the upright capsule
+      // spawn a jointed ragdoll flung backward from the soldier's facing (pooled/capped)
       const k = 3 + rng() * 3;
-      arena.ragdoll(s.h, -Math.sin(s.face) * k + (rng() - 0.5) * 3, 3 + rng() * 2,
-                    -Math.cos(s.face) * k + (rng() - 0.5) * 3, 2 + rng() * 4);
+      arena.spawnRagdoll(s.x, 1.0, s.z, -Math.sin(s.face) * k + (rng() - 0.5) * 3,
+                         3 + rng() * 2, -Math.cos(s.face) * k + (rng() - 0.5) * 3);
+      s.h = -1;
     }
   }
   function damage(s, dmg, kind) {
@@ -335,7 +338,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     // writing intents into the shared buffer. box3d then integrates movement AND
     // resolves crowd separation / boundary in arena.step — no hand-rolled push-apart.
     for (const s of soldiers) {
-      if (s.state === 1) { s.deathT += dt; if (s.deathT > CONFIG.ragdollLifetime) { s.state = 2; if (s.h >= 0) { arena.remove(s.h); s.h = -1; } } continue; }
+      if (s.state === 1) { s.deathT += dt; if (s.deathT > CONFIG.ragdolls.lifetime) s.state = 2; continue; } // capsule already removed at kill; ragdoll pool owns the corpse
       if (s.state !== 0) continue;
       const u = s.unit, T = u.type;
       s.fightT = Math.max(0, s.fightT - dt);

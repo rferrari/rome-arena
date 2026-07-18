@@ -342,10 +342,12 @@ const brickMesh = new THREE.InstancedMesh(
   new THREE.MeshStandardMaterial({ color: 0x9a8f7c, roughness: 1 }),
   CONFIG.render.brickCap
 );
-const ragdollGeo = new THREE.CapsuleGeometry(0.35, 0.65, 3, 6);
-ragdollGeo.translate(0, 0.725, 0); // match the physics capsule's body-local center
+// jointed ragdoll bones: one box instance per bone (cap * 14 bones), scaled by
+// each bone's half-extents streamed from the physics buffer.
 const ragdollMesh = new THREE.InstancedMesh(
-  ragdollGeo, new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.9 }), CONFIG.render.ragdollCap
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshStandardMaterial({ color: 0x6a3b2b, roughness: 0.9 }),
+  CONFIG.ragdolls.cap * 14 + 16
 );
 for (const m of [brickMesh, ragdollMesh]) {
   m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -392,9 +394,9 @@ function updateProps() {
   const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
     dummy.position.set(x, y, z);
     dummy.quaternion.set(qx, qy, qz, qw);
-    if (kind === 5) { // ragdoll corpse (capsule)
+    if (kind === 5) { // ragdoll bone (box scaled by half-extents)
       if (nr >= ragdollMesh.count) return;
-      dummy.scale.set(1, 1, 1);
+      dummy.scale.set(hx * 2, hy * 2, hz * 2);
       dummy.updateMatrix(); ragdollMesh.setMatrixAt(nr++, dummy.matrix);
     } else { // brick (2) or rubble (6)
       if (nb >= brickMesh.count) return;
@@ -639,14 +641,8 @@ function updateInstances(dt) {
       continue;
     }
 
-    if (rs.state === 2) { dummy.position.set(0, -10, 0); dummy.scale.setScalar(0); dummy.rotation.set(0, 0, 0); }
-    else if (rs.state === 1) {
-      const t = rs.deathT;
-      dummy.position.set(rs.x, Math.max((isCav ? 0.5 : 0.35) - Math.max(0, t - 2.5) * 0.4, -0.6), rs.z);
-      dummy.rotation.set(Math.PI / 2, rs.face, isCav ? Math.min(t / 0.4, 1) * 1.2 : 0);
-      if (!isCav) dummy.rotation.x = Math.min(t / 0.4, 1) * Math.PI / 2;
-      dummy.scale.set(1, isCav ? 1.4 : 1, 1);
-    } else {
+    if (rs.state !== 0) { dummy.position.set(0, -10, 0); dummy.scale.setScalar(0); dummy.rotation.set(0, 0, 0); } // dead: hidden; the jointed ragdoll renders the corpse
+    else {
       const c = unitCentroids[j];
       c.x += rs.x; c.z += rs.z; c.n++;
       if (isCav) {

@@ -30,7 +30,9 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     contactCount: c('arena_contact_count', 'number', []),
     contactsPtr: c('arena_contacts_ptr', 'number', []),
     raycast: c('arena_raycast', 'number', ['number', 'number', 'number', 'number', 'number', 'number']),
-    ragdoll: c('arena_ragdoll', null, ['number', 'number', 'number', 'number', 'number']),
+    spawnRagdoll: c('arena_spawn_ragdoll', null, ['number', 'number', 'number', 'number', 'number', 'number']),
+    setRagdollParams: c('arena_set_ragdoll_params', null, ['number', 'number']),
+    renderCount: c('arena_render_count', 'number', []),
     buildFort: c('arena_build_fort', 'number', ['number', 'number', 'number', 'number', 'number']),
     sync: c('arena_sync', null, []),
   };
@@ -58,7 +60,8 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     addBrick: (x, y, z, hx, hy, hz, dyn) => fn.addBrick(x, y, z, hx, hy, hz, dyn ? 1 : 0),
     addBoulder: (x, y, z, vx, vy, vz, r) => fn.addBoulder(x, y, z, vx, vy, vz, r),
     remove: (h) => fn.remove(h),
-    get count() { return fn.bodyCount(); },
+    get count() { return fn.renderCount(); }, // bodies + ragdoll bones (for render/snapshot)
+    get bodyCount() { return fn.bodyCount(); },
     get intents() { sync(); return intentView; },
     get transforms() { sync(); return xfView; },
     step(dt, subSteps = 4) { fn.step(dt, subSteps); },
@@ -67,8 +70,9 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     contacts() { sync(); return { count: fn.contactCount(), pairs: contactView }; },
     // closest-hit ray; returns the hit body handle or -1.
     raycast: (x0, y0, z0, x1, y1, z1) => fn.raycast(x0, y0, z0, x1, y1, z1),
-    // turn soldier body `h` into a toppling corpse flung at velocity (vx,vy,vz).
-    ragdoll: (h, vx, vy, vz, spin = 3) => fn.ragdoll(h, vx, vy, vz, spin),
+    // spawn a jointed ragdoll (pooled/capped) at (x,y,z) flung at (vx,vy,vz).
+    spawnRagdoll: (x, y, z, vx, vy, vz) => fn.spawnRagdoll(x, y, z, vx, vy, vz),
+    setRagdollParams: (cap, life) => fn.setRagdollParams(cap, life),
     // build a castle centered at (cx,cz); gateDir picks the gate's z-side (-1/+1).
     buildFort: (cx, cz, halfSize, courses = 5, gateDir = -1) => fn.buildFort(cx, cz, halfSize, courses, gateDir),
     // fill the transform buffer without stepping (e.g. show the fresh fort at lobby).

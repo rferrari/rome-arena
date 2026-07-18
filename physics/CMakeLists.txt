@@ -23,7 +23,9 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${BOX3D_DIR} box3d-build)
 
-add_executable(arena arena_physics.c)
+# include box3d's shared/ sample helpers for CreateHuman (jointed ragdolls)
+add_executable(arena arena_physics.c ${BOX3D_DIR}/shared/human.c)
+target_include_directories(arena PRIVATE ${BOX3D_DIR}/shared)
 target_link_libraries(arena PRIVATE box3d)
 
 # Emit arena.mjs (ES6 factory) + arena.wasm, loadable in both Bun and browsers.

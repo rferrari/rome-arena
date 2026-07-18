@@ -6,14 +6,30 @@
 import { createSim } from './sim.js';
 import { createArena } from './physics/arena_api.js';
 import { CONFIG } from './physics/config.js';
+import { resolveProvider } from './ai/providers.js';
+import { commandTeam } from './ai/commander.js';
 
 const arg = (name, def) => {
   const i = process.argv.indexOf(`--${name}`);
   return i > -1 ? +process.argv[i + 1] : def;
 };
+const argStr = (name, def) => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i > -1 ? process.argv[i + 1] : def;
+};
 const PORT = arg('port', 8321);
 const PLAYERS = [Math.min(4, Math.max(1, arg('t0', 2))), Math.min(4, Math.max(1, arg('t1', 2)))];
 const FORT = arg('fort', 0) > 0; // --fort 1 spawns a central destructible castle
+const AI_TURN = arg('aiturn', 4); // seconds between LLM-general orders
+const AUTOSTART = arg('autostart', 0) > 0; // begin the battle with no human FIGHT press
+
+// LLM generals per team: --ai0 groq --ai1 mock  (providers: groq|openai|pioneer|mock|none)
+const commanders = [null, null];
+for (let t = 0; t < 2; t++) {
+  try { commanders[t] = resolveProvider(argStr(`ai${t}`, 'none')); }
+  catch (e) { console.error(`team ${t} AI disabled: ${e.message}`); }
+  if (commanders[t]) console.log(`team ${t} commanded by LLM: ${commanders[t].name} (${commanders[t].model})`);
+}
 
 const clients = new Map(); // ws -> {team, slot} | {spectator:true}
 let sim, state; // state: 'lobby' | 'playing'
@@ -23,8 +39,14 @@ function resetSim(seed = (Math.random() * 1e9) | 0) {
   sim = createSim({ seed, players: PLAYERS, arena, fort: FORT });
   state = 'lobby';
   for (const who of clients.values()) if (!who.spectator) sim.ai.delete(`${who.team}:${who.slot}`);
+  // an LLM-commanded team is driven only by its general, not the built-in unit AI
+  for (let t = 0; t < 2; t++) if (commanders[t]) for (let s = 0; s < PLAYERS[t]; s++) sim.ai.delete(`${t}:${s}`);
 }
 resetSim(arg('seed', 42) | 0);
+
+// AI-vs-AI (or --autostart) begins immediately so spectators can just watch.
+const autoStart = AUTOSTART || (commanders[0] && commanders[1]);
+if (autoStart) state = 'playing';
 
 function claimSlot() {
   for (let slot = 0; slot < 4; slot++) {
@@ -173,5 +195,26 @@ setInterval(() => {
   const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner });
   for (const ws of clients.keys()) { ws.send(snap); ws.send(evMsg); }
 }, 1000 / 12);
+
+// LLM generals: each commanded team gets fresh orders every AI_TURN seconds while
+// the battle runs. Turns are async (network) and guarded so they never overlap;
+// the general's taunt is broadcast to the ticker.
+const aiBusy = [false, false];
+if (commanders[0] || commanders[1]) {
+  setInterval(() => {
+    if (state !== 'playing' || sim.winner !== null) return;
+    for (let t = 0; t < 2; t++) {
+      if (!commanders[t] || aiBusy[t]) continue;
+      aiBusy[t] = true;
+      commandTeam(sim, t, commanders[t])
+        .then(({ taunt, count }) => {
+          if (taunt) broadcast(JSON.stringify({ type: 'ev', e: [['note', `${t === 0 ? 'Red' : 'Blue'} general: ${taunt}`]], stats: sim.stats, counts: sim.counts, winner: sim.winner }));
+          console.log(`AI team ${t} (${commanders[t].name}): ${count} orders — ${taunt}`);
+        })
+        .catch((e) => console.error(`AI team ${t} turn failed: ${e.message}`))
+        .finally(() => { aiBusy[t] = false; });
+    }
+  }, 1000 * AI_TURN);
+}
 
 console.log(`rome-arena server on http://localhost:${PORT}  (${PLAYERS[0]}v${PLAYERS[1]}, lobby open — press FIGHT in a client to start)`);

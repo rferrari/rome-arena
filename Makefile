@@ -15,6 +15,9 @@ wasm: ## (maintainer) build the box3d physics module -> physics/arena.{mjs,wasm}
 wasm-test: ## headless physics smoke test (drop a cube, assert it settles)
 	bun physics/smoke.js
 
+wasm-bench: ## physics body-count perf gate (500 soldiers + 1000 bricks + 20 boulders)
+	bun physics/bench.js
+
 help:
 	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/'
 

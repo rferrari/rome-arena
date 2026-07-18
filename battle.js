@@ -3,6 +3,7 @@
 // using the exact same sim.js module.
 import * as THREE from 'three';
 import { createSim, TYPES, FIELD_W, FIELD_D, SPACING } from './sim.js';
+import { createArena } from './physics/arena_api.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -154,10 +155,14 @@ function setupSoloReaders() {
   };
 }
 
-function startSolo() {
+let booting = false;
+async function startSolo() {
+  if (booting || mode) return; // async WASM load leaves `mode` null; guard re-entry
+  booting = true;
+  const arena = await createArena({ maxBodies: 8000 }); // browser-side box3d world for solo play
   mode = 'solo';
   you = { team: 0, slot: -1 }; // -1 = owns all of team 0
-  sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2] });
+  sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena });
   for (let p = 0; p < 2; p++) sim.ai.delete(`0:${p}`);
   buildMeta(sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, n: u.type.n })));
   setupSoloReaders();

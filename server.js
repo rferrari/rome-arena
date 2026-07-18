@@ -4,6 +4,7 @@
 // Clients send JSON orders; server broadcasts binary snapshots @ 12Hz plus
 // JSON events/stats.
 import { createSim } from './sim.js';
+import { createArena } from './physics/arena_api.js';
 
 const arg = (name, def) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -14,9 +15,10 @@ const PLAYERS = [Math.min(4, Math.max(1, arg('t0', 2))), Math.min(4, Math.max(1,
 
 const clients = new Map(); // ws -> {team, slot} | {spectator:true}
 let sim, state; // state: 'lobby' | 'playing'
+const arena = await createArena({ maxBodies: 8000 }); // one box3d world, reused per battle
 
 function resetSim(seed = (Math.random() * 1e9) | 0) {
-  sim = createSim({ seed, players: PLAYERS });
+  sim = createSim({ seed, players: PLAYERS, arena });
   state = 'lobby';
   for (const who of clients.values()) if (!who.spectator) sim.ai.delete(`${who.team}:${who.slot}`);
 }

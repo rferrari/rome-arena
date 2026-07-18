@@ -1,8 +1,10 @@
 // Headless battle: all slots AI, run up to 5 sim-minutes, assert the
 // mechanics actually fire. `make test`.
 import { createSim } from './sim.js';
+import { createArena } from './physics/arena_api.js';
 
-const sim = createSim({ seed: 7, players: [2, 2] });
+const arena = await createArena({ maxBodies: 8000 });
+const sim = createSim({ seed: 7, players: [2, 2], arena });
 console.log(`units: ${sim.units.length}, soldiers: ${sim.soldiers.length}`);
 
 const t0 = performance.now();

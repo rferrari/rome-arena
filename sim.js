@@ -36,7 +36,12 @@ function mulberry32(seed) {
   };
 }
 
-export function createSim({ seed = 1, players = [2, 2] } = {}) {
+export const SUBSTEPS = 4; // box3d solver sub-steps per tick (open-field default)
+
+export function createSim({ seed = 1, players = [2, 2], arena } = {}) {
+  if (!arena) throw new Error('createSim requires a physics arena (see physics/arena_api.js)');
+  arena.reset(seed >>> 0);            // fresh box3d world + body tables
+  arena.createGround(FIELD_W, FIELD_D); // static floor + perimeter walls
   const rng = mulberry32(seed);
   const units = [], soldiers = [], projectiles = [], arrows = [];
   const events = [];
@@ -87,6 +92,7 @@ export function createSim({ seed = 1, players = [2, 2] } = {}) {
         cd: rng(), cdR: rng() * 2, state: 0 /* 0 alive 1 dying 2 gone */,
         deathT: 0, fightT: 0, mom: 0,
         speed: type.speed * (0.9 + rng() * 0.2),
+        h: arena.addSoldier(p.x, p.z), // box3d capsule body handle
       };
       u.soldiers.push(s); soldiers.push(s);
     }
@@ -144,6 +150,7 @@ export function createSim({ seed = 1, players = [2, 2] } = {}) {
     s.state = 1; s.deathT = 0;
     s.unit.alive--;
     s.unit.morale = Math.max(0, s.unit.morale - 4);
+    if (s.h >= 0) { arena.remove(s.h); s.h = -1; } // drop the capsule (ragdolls arrive in Phase 5)
   }
   function damage(s, dmg, kind) {
     if (s.state !== 0) return 0;
@@ -195,17 +202,16 @@ export function createSim({ seed = 1, players = [2, 2] } = {}) {
     return n ? { x: x / n, z: z / n } : { x: 0, z: 0 };
   }
 
-  function moveToward(s, tx, tz, dt, speedMult = 1, unclamped = false) {
+  // Desired-velocity intents written into the shared HEAP buffer; box3d integrates
+  // them (and resolves collisions/separation) in arena.step. veff is capped so a
+  // soldier never overshoots its target in one tick (mirrors the old min(d, v*dt)).
+  function setVel(s, tx, tz, v, dt) {
+    const it = arena.intents, o = s.h * 2;
     const dx = tx - s.x, dz = tz - s.z, d = Math.hypot(dx, dz);
-    const v = s.speed * speedMult;
-    const step = Math.min(d, v * dt);
-    if (d > 1e-6) { s.x += (dx / d) * step; s.z += (dz / d) * step; }
-    if (!unclamped) {
-      s.x = clamp(s.x, -FIELD_W / 2 + 2, FIELD_W / 2 - 2);
-      s.z = clamp(s.z, -FIELD_D / 2 + 2, FIELD_D / 2 - 2);
-    }
-    s.mom += (v - s.mom) * Math.min(1, dt * 3);
+    if (d > 1e-6) { const veff = Math.min(v, d / dt); it[o] = (dx / d) * veff; it[o + 1] = (dz / d) * veff; }
+    else { it[o] = 0; it[o + 1] = 0; }
   }
+  function setStop(s) { const it = arena.intents, o = s.h * 2; it[o] = 0; it[o + 1] = 0; }
 
   // ---- orders (caller validates ownership) ----
   function order(unitIds, p0, p1) {
@@ -271,14 +277,17 @@ export function createSim({ seed = 1, players = [2, 2] } = {}) {
     for (const s of soldiers) if (s.state === 0) { s.unit.sx += s.x; s.unit.sz += s.z; }
     for (const u of units) if (u.alive > 0) { u.cx = u.sx / u.alive; u.cz = u.sz / u.alive; }
 
+    // Decide each soldier's desired velocity (+ melee) from last tick's positions,
+    // writing intents into the shared buffer. box3d then integrates movement AND
+    // resolves crowd separation / boundary in arena.step — no hand-rolled push-apart.
     for (const s of soldiers) {
       if (s.state === 1) { s.deathT += dt; if (s.deathT > 4) s.state = 2; continue; }
       if (s.state !== 0) continue;
       const u = s.unit, T = u.type;
       s.fightT = Math.max(0, s.fightT - dt);
 
-      if (u.broken) { // rout: run for your own map edge
-        moveToward(s, s.x, u.team === 0 ? FIELD_D : -FIELD_D, dt, 1.15, true);
+      if (u.broken) { // rout: run for your own map edge (piles at the wall, then flees)
+        setVel(s, s.x, u.team === 0 ? FIELD_D : -FIELD_D, s.speed * 1.15, dt);
         continue;
       }
 
@@ -288,33 +297,32 @@ export function createSim({ seed = 1, players = [2, 2] } = {}) {
         const d = Math.hypot(enemy.x - s.x, enemy.z - s.z);
         s.face = Math.atan2(enemy.x - s.x, enemy.z - s.z);
         if (d <= T.range) {
-          s.mom *= 1 - Math.min(1, dt * 3);
+          setStop(s);
           s.cd -= dt;
           if (s.cd <= 0) { s.cd = T.cd + rng() * ATTACK_CD_JIT; attack(s, enemy); }
         } else if (u.stance && T.alt) {
           // phalanx/testudo holds ranks: advance as a block, never chase
           slotPos(u, s.slot, slotP);
-          moveToward(s, slotP.x, slotP.z, dt, speedMult);
-        } else moveToward(s, enemy.x, enemy.z, dt, speedMult);
+          setVel(s, slotP.x, slotP.z, s.speed * speedMult, dt);
+        } else setVel(s, enemy.x, enemy.z, s.speed * speedMult, dt);
       } else {
         if (T.ranged) fireArrowMaybe(s, dt);
         slotPos(u, s.slot, slotP);
         const d = Math.hypot(slotP.x - s.x, slotP.z - s.z);
-        if (d > 0.15) { s.face = Math.atan2(slotP.x - s.x, slotP.z - s.z); moveToward(s, slotP.x, slotP.z, dt, speedMult); }
-        else { s.face = u.facing; s.mom *= 1 - Math.min(1, dt * 3); }
+        if (d > 0.15) { s.face = Math.atan2(slotP.x - s.x, slotP.z - s.z); setVel(s, slotP.x, slotP.z, s.speed * speedMult, dt); }
+        else { s.face = u.facing; setStop(s); }
       }
+    }
 
-      // cheap separation
-      let checked = 0;
-      forNeighbors(s.x, s.z, (o) => {
-        if (o === s || checked > 5) return;
-        const dx = s.x - o.x, dz = s.z - o.z, d2 = dx * dx + dz * dz;
-        if (d2 < 0.64 && d2 > 1e-6) {
-          checked++;
-          const d = Math.sqrt(d2), push = (0.8 - d) * 2 * dt;
-          s.x += (dx / d) * push; s.z += (dz / d) * push;
-        }
-      });
+    // Advance the physics world one tick, then read positions back. Momentum is
+    // the ACTUAL distance moved per second (drives the cavalry charge bonus).
+    arena.step(dt, SUBSTEPS);
+    const xf = arena.transforms, ST = arena.XF_STRIDE;
+    for (const s of soldiers) {
+      if (s.state !== 0 || s.h < 0) continue;
+      const o = s.h * ST, nx = xf[o], nz = xf[o + 2];
+      s.mom = Math.hypot(nx - s.x, nz - s.z) / dt;
+      s.x = nx; s.z = nz;
     }
 
     // morale: regen when safe, pressure when depleted, break & rally
@@ -337,7 +345,7 @@ export function createSim({ seed = 1, players = [2, 2] } = {}) {
         u.facing = Math.atan2(ec.x - u.cx, ec.z - u.cz);
         events.push(['note', `${teamName(u.team)} ${u.typeKey} rallied`]);
       }
-      if (u.broken && Math.abs(u.cz) > FIELD_D / 2 + 4) {
+      if (u.broken && Math.abs(u.cz) > FIELD_D / 2 - 8) { // reached the perimeter wall
         for (const s of u.soldiers) if (s.state !== 2) s.state = 2;
         u.alive = 0;
         events.push(['note', `${teamName(u.team)} ${u.typeKey} fled the field`]);

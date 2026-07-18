@@ -34,6 +34,6 @@ target_link_options(arena PRIVATE
   "-sEXPORT_ES6=1"
   "-sENVIRONMENT=web,worker,node"
   "-sALLOW_MEMORY_GROWTH=1"
-  "-sEXPORTED_RUNTIME_METHODS=['HEAPF32','HEAPU8','HEAPU32','cwrap']"
+  "-sEXPORTED_RUNTIME_METHODS=['HEAPF32','HEAP32','HEAPU8','HEAPU32','cwrap']"
   "-sEXPORTED_FUNCTIONS=['_malloc','_free']"
 )

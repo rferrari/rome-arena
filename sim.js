@@ -22,6 +22,7 @@ export const COMP_BACK = ['archer', 'cavalry'];
 
 const ATTACK_CD_JIT = 0.2, SEEK_RANGE = 5;
 const CAT_RANGE = 75, CAT_MIN_RANGE = 15, CAT_CD = 5, CAT_AOE = 7;
+const GRAVITY = 10, BOULDER_R = 1.2, BOULDER_DMG = 110, BOULDER_LIFE = 3, BOULDER_LAUNCH_Y = 3;
 const CELL = 5;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -44,6 +45,8 @@ export function createSim({ seed = 1, players = [2, 2], arena } = {}) {
   arena.createGround(FIELD_W, FIELD_D); // static floor + perimeter walls
   const rng = mulberry32(seed);
   const units = [], soldiers = [], projectiles = [], arrows = [];
+  const boulders = [];                 // live catapult rocks: { h, born, hits }
+  const soldierByHandle = new Map();   // box3d body handle -> soldier (for contacts)
   const events = [];
   const stats = {
     spearVsCav: { n: 0, dmg: 0 },   // bonus dmg from anti-cavalry weapons
@@ -94,7 +97,7 @@ export function createSim({ seed = 1, players = [2, 2], arena } = {}) {
         speed: type.speed * (0.9 + rng() * 0.2),
         h: arena.addSoldier(p.x, p.z), // box3d capsule body handle
       };
-      u.soldiers.push(s); soldiers.push(s);
+      u.soldiers.push(s); soldiers.push(s); soldierByHandle.set(s.h, s);
     }
     units.push(u);
     return u;
@@ -150,7 +153,7 @@ export function createSim({ seed = 1, players = [2, 2], arena } = {}) {
     s.state = 1; s.deathT = 0;
     s.unit.alive--;
     s.unit.morale = Math.max(0, s.unit.morale - 4);
-    if (s.h >= 0) { arena.remove(s.h); s.h = -1; } // drop the capsule (ragdolls arrive in Phase 5)
+    if (s.h >= 0) { soldierByHandle.delete(s.h); arena.remove(s.h); s.h = -1; } // drop the capsule (ragdolls arrive in Phase 5)
   }
   function damage(s, dmg, kind) {
     if (s.state !== 0) return 0;
@@ -367,27 +370,57 @@ export function createSim({ seed = 1, players = [2, 2], arena } = {}) {
           u.catCd = CAT_CD;
           const tx = best.x + (rng() - 0.5) * 6, tz = best.z + (rng() - 0.5) * 6;
           const dur = 1.2 + bd / 40;
-          projectiles.push({ tx, tz, t: 0, dur });
+          // launch a REAL rock on a ballistic arc that lands at (tx,0,tz) in `dur`s
+          const vx = (tx - u.ax) / dur, vz = (tz - u.az) / dur;
+          const vy = (0 - BOULDER_LAUNCH_Y) / dur + 0.5 * GRAVITY * dur;
+          const h = arena.addBoulder(u.ax, BOULDER_LAUNCH_Y, u.az, vx, vy, vz, BOULDER_R);
+          boulders.push({ h, born: sim.time, hits: 0 });
           stats.boulders.fired++;
-          events.push(['shot', u.ax, u.az, tx, tz, dur]);
+          events.push(['shot', u.ax, u.az, tx, tz, dur]); // cosmetic arc (real render in Phase 6)
         }
       }
     }
-    for (let i = projectiles.length - 1; i >= 0; i--) {
-      const p = projectiles[i];
-      p.t += dt;
-      if (p.t >= p.dur) { explode(p.tx, p.tz); projectiles.splice(i, 1); }
+    // boulder damage: real rocks plow through crowds — each begin-touch with a
+    // soldier is a hit; hitting terrain/wall detonates an AoE splash at the rock.
+    if (boulders.length) {
+      const { count, pairs } = arena.contacts();
+      const xf = arena.transforms, ST = arena.XF_STRIDE;
+      const live = new Set(boulders.map((b) => b.h));
+      for (let i = 0; i < count; i++) {
+        const a = pairs[i * 2], b = pairs[i * 2 + 1];
+        let bh = -1, oh = -1;
+        if (live.has(a)) { bh = a; oh = b; } else if (live.has(b)) { bh = b; oh = a; }
+        if (bh < 0) continue;
+        const victim = soldierByHandle.get(oh);
+        if (victim) { stats.boulders.kills += damage(victim, BOULDER_DMG, 'ranged'); boulders.find((x) => x.h === bh).hits++; }
+        else if (xf[oh * ST + 7] === 4 /* KIND_STATIC: ground/wall */) {
+          explode(xf[bh * ST], xf[bh * ST + 2]); // splash at the rock's position
+          const bl = boulders.find((x) => x.h === bh); if (bl) bl.born = -1e9; // mark spent
+        }
+      }
+      for (let i = boulders.length - 1; i >= 0; i--) {
+        if (sim.time - boulders[i].born > BOULDER_LIFE) { arena.remove(boulders[i].h); boulders.splice(i, 1); }
+      }
     }
+    // arrows: cosmetic timers in JS, but the hit is resolved by a vertical ray at
+    // the landing column so real geometry (walls) can block and the true soldier is picked.
     for (let i = arrows.length - 1; i >= 0; i--) {
       const a = arrows[i];
       a.t += dt;
       if (a.t >= a.dur) {
-        let hit = null, bd = 1.2;
-        forNeighbors(a.tx, a.tz, (s) => {
-          const d = Math.hypot(s.x - a.tx, s.z - a.tz);
-          if (d < bd) { bd = d; hit = s; }
-        });
-        if (hit) { damage(hit, a.dmg, 'ranged'); stats.arrows.hits++; }
+        // vertical ray picks the exact soldier under the impact (and lets real
+        // geometry occlude); fall back to nearest-in-radius so a near miss in a
+        // dense formation still lands, preserving archer effectiveness.
+        const hh = arena.raycast(a.tx, 20, a.tz, a.tx, -1, a.tz);
+        let hit = soldierByHandle.get(hh);
+        if (!hit || hit.state !== 0) {
+          let bd = 1.2;
+          forNeighbors(a.tx, a.tz, (s) => {
+            const d = Math.hypot(s.x - a.tx, s.z - a.tz);
+            if (d < bd) { bd = d; hit = s; }
+          });
+        }
+        if (hit && hit.state === 0) { damage(hit, a.dmg, 'ranged'); stats.arrows.hits++; }
         arrows.splice(i, 1);
       }
     }

@@ -13,6 +13,7 @@
 #include <box3d/box3d.h>
 #include <emscripten.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 // ---- soldier capsule dimensions (upright, planar battle) ----
 #define SOL_RADIUS 0.35f
@@ -33,6 +34,11 @@ static float* g_xf = NULL;      // transform out buffer  (XF_STRIDE * cap)
 static float* g_intent = NULL;  // soldier intent buffer (2 * cap): desired vx,vz
 static int g_cap = 0;
 static int g_count = 0;
+
+// contact begin-touch pairs drained each step (handleA, handleB), for JS damage
+#define MAX_CONTACTS 8192
+static int* g_contacts = NULL;
+static int g_contactCount = 0;
 
 // ---------------- Phase 1 smoke API (unchanged) ----------------
 static b3BodyId g_box;
@@ -88,13 +94,15 @@ void arena_reset(int seed, int maxBodies) {
   wd.enableSleep = true;
   g_world = b3CreateWorld(&wd);
 
-  free(g_bodies); free(g_kind); free(g_xf); free(g_intent);
+  free(g_bodies); free(g_kind); free(g_xf); free(g_intent); free(g_contacts);
   g_cap = maxBodies;
   g_count = 0;
+  g_contactCount = 0;
   g_bodies = (b3BodyId*) malloc(sizeof(b3BodyId) * g_cap);
   g_kind = (unsigned char*) calloc(g_cap, 1);
   g_xf = (float*) calloc(g_cap * XF_STRIDE, sizeof(float));
   g_intent = (float*) calloc(g_cap * 2, sizeof(float));
+  g_contacts = (int*) calloc(MAX_CONTACTS * 2, sizeof(int));
 }
 
 static int push_body(b3BodyId id, unsigned char kind) {
@@ -115,6 +123,7 @@ void arena_create_ground(float w, float d) {
   b3BodyDef gd = b3DefaultBodyDef();
   gd.type = b3_staticBody;
   gd.position = (b3Pos){ 0.0f, -1.0f, 0.0f };
+  gd.userData = (void*)(intptr_t) g_count;
   b3BodyId ground = b3CreateBody(g_world, &gd);
   b3BoxHull gh = b3MakeBoxHull(w, 1.0f, d);
   b3CreateHullShape(ground, &sd, &gh.base);
@@ -129,6 +138,7 @@ void arena_create_ground(float w, float d) {
     b3BodyDef bd = b3DefaultBodyDef();
     bd.type = b3_staticBody;
     bd.position = (b3Pos){ px[i], hh * 0.5f, pz[i] };
+    bd.userData = (void*)(intptr_t) g_count;
     b3BodyId wall = b3CreateBody(g_world, &bd);
     b3BoxHull wh = b3MakeBoxHull(ex[i], hh, ez[i]);
     b3CreateHullShape(wall, &sd, &wh.base);
@@ -147,6 +157,7 @@ int arena_add_soldier(float x, float z) {
   bd.motionLocks.angularY = true;
   bd.motionLocks.angularZ = true;
   bd.linearDamping = 0.1f;
+  bd.userData = (void*)(intptr_t) g_count;
   b3BodyId id = b3CreateBody(g_world, &bd);
 
   b3Capsule cap = { { 0.0f, SOL_LOW, 0.0f }, { 0.0f, SOL_HIGH, 0.0f }, SOL_RADIUS };
@@ -162,6 +173,7 @@ int arena_add_brick(float x, float y, float z, float hx, float hy, float hz, int
   b3BodyDef bd = b3DefaultBodyDef();
   bd.type = isDynamic ? b3_dynamicBody : b3_staticBody;
   bd.position = (b3Pos){ x, y, z };
+  bd.userData = (void*)(intptr_t) g_count;
   b3BodyId id = b3CreateBody(g_world, &bd);
   b3BoxHull hull = b3MakeBoxHull(hx, hy, hz);
   b3ShapeDef sd = b3DefaultShapeDef();
@@ -179,11 +191,15 @@ int arena_add_boulder(float x, float y, float z, float vx, float vy, float vz, f
   bd.position = (b3Pos){ x, y, z };
   bd.isBullet = true;
   bd.linearVelocity = (b3Vec3){ vx, vy, vz };
+  bd.userData = (void*)(intptr_t) g_count;
   b3BodyId id = b3CreateBody(g_world, &bd);
   b3HullData* rock = b3CreateRock(radius);
   b3ShapeDef sd = b3DefaultShapeDef();
   sd.density = 13.0f;
   sd.baseMaterial.friction = 0.6f;
+  // only boulders enable contact events; box3d fires begin-touch if EITHER shape
+  // enables it, so boulder-vs-soldier/wall reports without the soldier-soldier flood.
+  sd.enableContactEvents = true;
   b3CreateHullShape(id, &sd, rock);
   b3DestroyHull(rock);
   return push_body(id, KIND_BOULDER);
@@ -213,6 +229,17 @@ void arena_step(float dt, int subSteps) {
 
   b3World_Step(g_world, dt, subSteps);
 
+  // drain begin-touch contacts into the shared int buffer as (handleA, handleB)
+  b3ContactEvents ce = b3World_GetContactEvents(g_world);
+  g_contactCount = 0;
+  for (int i = 0; i < ce.beginCount && g_contactCount < MAX_CONTACTS; i++) {
+    int ha = (int)(intptr_t) b3Body_GetUserData(b3Shape_GetBody(ce.beginEvents[i].shapeIdA));
+    int hb = (int)(intptr_t) b3Body_GetUserData(b3Shape_GetBody(ce.beginEvents[i].shapeIdB));
+    g_contacts[g_contactCount * 2] = ha;
+    g_contacts[g_contactCount * 2 + 1] = hb;
+    g_contactCount++;
+  }
+
   for (int h = 0; h < g_count; h++) {
     float* o = g_xf + h * XF_STRIDE;
     if (g_kind[h] == KIND_DEAD) { o[7] = KIND_DEAD; continue; }
@@ -221,4 +248,21 @@ void arena_step(float dt, int subSteps) {
     o[3] = t.q.v.x; o[4] = t.q.v.y; o[5] = t.q.v.z; o[6] = t.q.s;
     o[7] = (float) g_kind[h];
   }
+}
+
+// Contacts drained during the last arena_step: a flat (handleA, handleB) int
+// buffer of length 2*arena_contact_count(). JS maps handles -> game objects.
+EMSCRIPTEN_KEEPALIVE int arena_contact_count(void) { return g_contactCount; }
+EMSCRIPTEN_KEEPALIVE int* arena_contacts_ptr(void) { return g_contacts; }
+
+// Closest-hit ray cast; returns the hit body's handle, or -1 on miss. Used for
+// arrow impacts (a vertical ray at the landing column picks the soldier hit, and
+// real geometry — walls — occludes it).
+EMSCRIPTEN_KEEPALIVE
+int arena_raycast(float x0, float y0, float z0, float x1, float y1, float z1) {
+  b3Pos origin = { x0, y0, z0 };
+  b3Vec3 translation = { x1 - x0, y1 - y0, z1 - z0 };
+  b3RayResult r = b3World_CastRayClosest(g_world, origin, translation, b3DefaultQueryFilter());
+  if (!r.hit) return -1;
+  return (int)(intptr_t) b3Body_GetUserData(b3Shape_GetBody(r.shapeId));
 }

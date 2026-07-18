@@ -27,15 +27,20 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     transformPtr: c('arena_transform_ptr', 'number', []),
     intentPtr: c('arena_intent_ptr', 'number', []),
     step: c('arena_step', null, ['number', 'number']),
+    contactCount: c('arena_contact_count', 'number', []),
+    contactsPtr: c('arena_contacts_ptr', 'number', []),
+    raycast: c('arena_raycast', 'number', ['number', 'number', 'number', 'number', 'number', 'number']),
   };
 
-  let lastBuffer = null, xfView = null, intentView = null;
+  let lastBuffer = null, xfView = null, intentView = null, contactView = null;
   const sync = () => {
     if (Module.HEAPF32.buffer === lastBuffer) return;
     lastBuffer = Module.HEAPF32.buffer;
     const xp = fn.transformPtr() >> 2, ip = fn.intentPtr() >> 2; // byte -> f32 index
     xfView = Module.HEAPF32.subarray(xp, xp + maxBodies * XF_STRIDE);
     intentView = Module.HEAPF32.subarray(ip, ip + maxBodies * 2);
+    const cp = fn.contactsPtr() >> 2; // byte -> i32 index
+    contactView = Module.HEAP32.subarray(cp, cp + 8192 * 2);
   };
 
   fn.reset(seed, maxBodies);
@@ -54,5 +59,10 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     get intents() { sync(); return intentView; },
     get transforms() { sync(); return xfView; },
     step(dt, subSteps = 4) { fn.step(dt, subSteps); },
+    // begin-touch contacts from the last step: {count, pairs} where pairs[i*2],
+    // pairs[i*2+1] are the two body handles that started touching.
+    contacts() { sync(); return { count: fn.contactCount(), pairs: contactView }; },
+    // closest-hit ray; returns the hit body handle or -1.
+    raycast: (x0, y0, z0, x1, y1, z1) => fn.raycast(x0, y0, z0, x1, y1, z1),
   };
 }

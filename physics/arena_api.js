@@ -30,6 +30,8 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     contactCount: c('arena_contact_count', 'number', []),
     contactsPtr: c('arena_contacts_ptr', 'number', []),
     raycast: c('arena_raycast', 'number', ['number', 'number', 'number', 'number', 'number', 'number']),
+    ragdoll: c('arena_ragdoll', null, ['number', 'number', 'number', 'number', 'number']),
+    buildFort: c('arena_build_fort', 'number', ['number', 'number', 'number', 'number']),
   };
 
   let lastBuffer = null, xfView = null, intentView = null, contactView = null;
@@ -64,5 +66,9 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     contacts() { sync(); return { count: fn.contactCount(), pairs: contactView }; },
     // closest-hit ray; returns the hit body handle or -1.
     raycast: (x0, y0, z0, x1, y1, z1) => fn.raycast(x0, y0, z0, x1, y1, z1),
+    // turn soldier body `h` into a toppling corpse flung at velocity (vx,vy,vz).
+    ragdoll: (h, vx, vy, vz, spin = 3) => fn.ragdoll(h, vx, vy, vz, spin),
+    // build a castle (walls/towers/keep) centered at (cx,cz); returns brick count.
+    buildFort: (cx, cz, halfSize, courses = 5) => fn.buildFort(cx, cz, halfSize, courses),
   };
 }

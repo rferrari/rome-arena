@@ -2,9 +2,10 @@ PORT ?= 8321
 T0 ?= 2
 T1 ?= 2
 SEED ?= 42
+FORT ?= 0
 
-start: ## run the multiplayer battle server (http + websocket)
-	bun server.js --port $(PORT) --t0 $(T0) --t1 $(T1) --seed $(SEED)
+start: ## run the multiplayer battle server (http + websocket); FORT=1 adds a central castle
+	bun server.js --port $(PORT) --t0 $(T0) --t1 $(T1) --seed $(SEED) --fort $(FORT)
 
 test: ## headless sim smoke test — asserts combat mechanics fire
 	bun test_sim.js
@@ -17,6 +18,9 @@ wasm-test: ## headless physics smoke test (drop a cube, assert it settles)
 
 wasm-bench: ## physics body-count perf gate (500 soldiers + 1000 bricks + 20 boulders)
 	bun physics/bench.js
+
+wasm-fort: ## build a castle and bombard it; assert masonry is stable then caves in
+	bun physics/fort.js
 
 help:
 	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/'

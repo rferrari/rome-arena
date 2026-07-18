@@ -14,6 +14,7 @@
 #include <emscripten.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <math.h>
 
 // ---- soldier capsule dimensions (upright, planar battle) ----
 #define SOL_RADIUS 0.35f
@@ -22,7 +23,17 @@
 #define SOL_DENSITY 1.0f
 
 // body kinds (also written into the transform buffer's flags slot)
-enum { KIND_DEAD = 0, KIND_SOLDIER = 1, KIND_BRICK = 2, KIND_BOULDER = 3, KIND_STATIC = 4 };
+enum { KIND_DEAD = 0, KIND_SOLDIER = 1, KIND_BRICK = 2, KIND_BOULDER = 3, KIND_STATIC = 4, KIND_RAGDOLL = 5 };
+
+// collision categories. Ragdolls (dead soldiers) collide only with the world/rubble
+// so corpses fall realistically without blocking the living battle.
+#define CAT_STATIC  0x1u
+#define CAT_SOLDIER 0x2u
+#define CAT_BOULDER 0x4u
+#define CAT_BRICK   0x8u
+#define CAT_RAGDOLL 0x10u
+#define MASK_ALL    0xFFFFFFFFu
+#define PI_F 3.14159265358979323846f
 
 // floats per body in the transform buffer: x,y,z, qx,qy,qz,qw, flags
 #define XF_STRIDE 8
@@ -119,6 +130,8 @@ EMSCRIPTEN_KEEPALIVE
 void arena_create_ground(float w, float d) {
   b3ShapeDef sd = b3DefaultShapeDef();
   sd.baseMaterial.friction = 0.8f;
+  sd.filter.categoryBits = CAT_STATIC;
+  sd.filter.maskBits = MASK_ALL;
 
   b3BodyDef gd = b3DefaultBodyDef();
   gd.type = b3_staticBody;
@@ -164,6 +177,8 @@ int arena_add_soldier(float x, float z) {
   b3ShapeDef sd = b3DefaultShapeDef();
   sd.density = SOL_DENSITY;
   sd.baseMaterial.friction = 0.4f;
+  sd.filter.categoryBits = CAT_SOLDIER;
+  sd.filter.maskBits = CAT_STATIC | CAT_SOLDIER | CAT_BOULDER | CAT_BRICK; // not ragdolls
   b3CreateCapsuleShape(id, &sd, &cap);
   return push_body(id, KIND_SOLDIER);
 }
@@ -179,6 +194,8 @@ int arena_add_brick(float x, float y, float z, float hx, float hy, float hz, int
   b3ShapeDef sd = b3DefaultShapeDef();
   sd.density = 4.0f;
   sd.baseMaterial.friction = 0.75f;
+  sd.filter.categoryBits = isDynamic ? CAT_BRICK : CAT_STATIC;
+  sd.filter.maskBits = MASK_ALL;
   b3CreateHullShape(id, &sd, &hull.base);
   return push_body(id, isDynamic ? KIND_BRICK : KIND_STATIC);
 }
@@ -197,6 +214,8 @@ int arena_add_boulder(float x, float y, float z, float vx, float vy, float vz, f
   b3ShapeDef sd = b3DefaultShapeDef();
   sd.density = 13.0f;
   sd.baseMaterial.friction = 0.6f;
+  sd.filter.categoryBits = CAT_BOULDER;
+  sd.filter.maskBits = CAT_STATIC | CAT_SOLDIER | CAT_BRICK | CAT_BOULDER; // not corpses
   // only boulders enable contact events; box3d fires begin-touch if EITHER shape
   // enables it, so boulder-vs-soldier/wall reports without the soldier-soldier flood.
   sd.enableContactEvents = true;
@@ -265,4 +284,95 @@ int arena_raycast(float x0, float y0, float z0, float x1, float y1, float z1) {
   b3RayResult r = b3World_CastRayClosest(g_world, origin, translation, b3DefaultQueryFilter());
   if (!r.hit) return -1;
   return (int)(intptr_t) b3Body_GetUserData(b3Shape_GetBody(r.shapeId));
+}
+
+// Turn a soldier's capsule into a toppling corpse: unlock rotation, refilter so it
+// only collides with the world/rubble (never the living), and fling it. Reuses the
+// existing body, so no new bodies and no ragdoll body-budget growth.
+EMSCRIPTEN_KEEPALIVE
+void arena_ragdoll(int h, float vx, float vy, float vz, float spin) {
+  if (h < 0 || h >= g_count || g_kind[h] == KIND_DEAD) return;
+  b3BodyId id = g_bodies[h];
+  b3MotionLocks freeLocks = { 0 };
+  b3Body_SetMotionLocks(id, freeLocks);
+  b3ShapeId sh;
+  if (b3Body_GetShapes(id, &sh, 1) == 1) {
+    b3Filter f = { CAT_RAGDOLL, CAT_STATIC | CAT_BRICK, 0 };
+    b3Shape_SetFilter(sh, f, true);
+  }
+  b3Body_SetAwake(id, true);
+  b3Body_SetLinearVelocity(id, (b3Vec3){ vx, vy, vz });
+  b3Body_SetAngularVelocity(id, (b3Vec3){ vz * spin, spin, -vx * spin });
+  g_kind[h] = KIND_RAGDOLL;
+}
+
+// ---- destructible masonry (ported from box3d samples sample_siege/sample_city) ----
+
+static int make_brick(float x, float y, float z, float hx, float hy, float hz, float yaw) {
+  b3BodyDef bd = b3DefaultBodyDef();
+  bd.type = b3_dynamicBody;
+  bd.position = (b3Pos){ x, y, z };
+  bd.rotation = b3MakeQuatFromAxisAngle((b3Vec3){ 0.0f, 1.0f, 0.0f }, yaw);
+  bd.userData = (void*)(intptr_t) g_count;
+  b3BodyId id = b3CreateBody(g_world, &bd);
+  b3BoxHull hull = b3MakeBoxHull(hx, hy, hz);
+  b3ShapeDef sd = b3DefaultShapeDef();
+  sd.density = 4.0f;
+  sd.baseMaterial.friction = 0.75f;
+  sd.filter.categoryBits = CAT_BRICK;
+  sd.filter.maskBits = MASK_ALL;
+  b3CreateHullShape(id, &sd, &hull.base);
+  return push_body(id, KIND_BRICK);
+}
+
+// Straight running-bond wall from (x0,z0) to (x1,z1). Bricks are sized to the span
+// minus a 0.06 gap so nothing spawns interpenetrating (sample's key stability trick).
+static void build_wall(float x0, float z0, float x1, float z1, int courses, float thick) {
+  float dx = x1 - x0, dz = z1 - z0, len = sqrtf(dx * dx + dz * dz);
+  if (len < 1e-3f) return;
+  float ux = dx / len, uz = dz / len, yaw = atan2f(-uz, ux);
+  int n = (int)(len / 2.0f); if (n < 1) n = 1;
+  float spacing = len / n, hx = 0.5f * spacing - 0.06f;
+  for (int c = 0; c < courses; c++) {
+    float y = 0.5f + c * 1.0f;
+    int odd = c & 1, cn = odd ? n - 1 : n;      // offset course: one fewer brick
+    if (cn < 1) cn = n;
+    for (int i = 0; i < cn; i++) {
+      float t = odd ? (i + 1) * spacing : (i + 0.5f) * spacing; // half-brick stagger
+      make_brick(x0 + ux * t, y, z0 + uz * t, hx, 0.5f, thick, yaw);
+    }
+  }
+}
+
+// Round tower/keep: straight-chord bricks around a circle, alternating courses
+// staggered by half a segment. Chord (not arc) half-width avoids overlap.
+static void build_tower(float cx, float cz, float radius, int sides, int courses) {
+  float chord = radius * sinf(PI_F / sides) - 0.06f;
+  if (chord < 0.05f) chord = 0.05f;
+  for (int c = 0; c < courses; c++) {
+    float y = 0.5f + c * 1.0f, rot0 = (c & 1) ? PI_F / sides : 0.0f;
+    for (int k = 0; k < sides; k++) {
+      float th = rot0 + (k + 0.5f) * (2.0f * PI_F / sides);
+      make_brick(cx + cosf(th) * radius, y, cz + sinf(th) * radius, chord, 0.5f, 0.7f, th + 0.5f * PI_F);
+    }
+  }
+}
+
+// A square castle centered at (cx,cz): curtain walls (gate gap in the front, -z
+// side), four corner towers, and a central keep. Returns the brick count.
+EMSCRIPTEN_KEEPALIVE
+int arena_build_fort(float cx, float cz, float S, int courses) {
+  int before = g_count;
+  const float gate = 6.0f, tr = 2.2f, in = 2.6f; // inset walls so corner towers fill the gaps
+  build_wall(cx - S + in, cz - S, cx - gate * 0.5f, cz - S, courses, 1.0f); // front-left
+  build_wall(cx + gate * 0.5f, cz - S, cx + S - in, cz - S, courses, 1.0f); // front-right
+  build_wall(cx - S + in, cz + S, cx + S - in, cz + S, courses, 1.0f);      // back
+  build_wall(cx - S, cz - S + in, cx - S, cz + S - in, courses, 1.0f);      // left
+  build_wall(cx + S, cz - S + in, cx + S, cz + S - in, courses, 1.0f);      // right
+  build_tower(cx - S, cz - S, tr, 9, courses + 2);
+  build_tower(cx + S, cz - S, tr, 9, courses + 2);
+  build_tower(cx - S, cz + S, tr, 9, courses + 2);
+  build_tower(cx + S, cz + S, tr, 9, courses + 2);
+  build_tower(cx, cz, 3.0f, 12, courses + 3);
+  return g_count - before;
 }

@@ -162,7 +162,7 @@ async function startSolo() {
   const arena = await createArena({ maxBodies: 8000 }); // browser-side box3d world for solo play
   mode = 'solo';
   you = { team: 0, slot: -1 }; // -1 = owns all of team 0
-  sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena });
+  sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena, fort: location.hash.includes('fort') });
   for (let p = 0; p < 2; p++) sim.ai.delete(`0:${p}`);
   buildMeta(sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, n: u.type.n })));
   setupSoloReaders();

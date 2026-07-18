@@ -8,6 +8,7 @@ import { createArena } from './physics/arena_api.js';
 import { CONFIG, setTier } from './physics/config.js';
 import { resolveProvider } from './ai/providers.js';
 import { commandTeam } from './ai/commander.js';
+import { readdirSync } from 'node:fs';
 
 const arg = (name, def) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -45,9 +46,32 @@ function resetSim(seed = (Math.random() * 1e9) | 0) {
 }
 resetSim(arg('seed', 42) | 0);
 
+// ---- battle recording for replay ----
+// Every playing battle is recorded (init meta + per-tick snapshots + general
+// decisions) and written to replays/*.json on the winner, for the replay viewer.
+let rec = null, recSaved = false;
+const pendingDec = []; // general decisions since the last recorded frame
+function startRec() {
+  rec = {
+    players: PLAYERS, tier: CONFIG.tier, render: CONFIG.render,
+    ai: commanders.map((c) => (c ? c.model : null)),
+    units: sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.type.n })),
+    frames: [],
+  };
+  recSaved = false;
+  pendingDec.length = 0;
+}
+async function saveRec() {
+  if (!rec || recSaved || !rec.frames.length) return;
+  recSaved = true;
+  const name = `replay-${Date.now()}.json`;
+  await Bun.write(import.meta.dir + '/replays/' + name, JSON.stringify(rec));
+  console.log(`replay saved: replays/${name}  (${rec.frames.length} frames)`);
+}
+
 // AI-vs-AI (or --autostart) begins immediately so spectators can just watch.
 const autoStart = AUTOSTART || (commanders[0] && commanders[1]);
-if (autoStart) state = 'playing';
+if (autoStart) { state = 'playing'; startRec(); }
 
 function claimSlot() {
   for (let slot = 0; slot < 4; slot++) {
@@ -139,6 +163,11 @@ Bun.serve({
   async fetch(req, srv) {
     if (srv.upgrade(req)) return;
     const url = new URL(req.url);
+    if (url.pathname === '/replays') { // JSON list of saved replays, newest first
+      let list = [];
+      try { list = readdirSync(import.meta.dir + '/replays').filter((f) => f.endsWith('.json')).sort().reverse(); } catch {}
+      return new Response(JSON.stringify(list), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+    }
     const path = url.pathname === '/' ? '/battle.html' : url.pathname;
     const file = Bun.file(import.meta.dir + path);
     // no-store so the browser never serves a stale battle.js / arena.wasm after a rebuild
@@ -173,6 +202,7 @@ Bun.serve({
           broadcast(lobbyMsg());
         } else if (state === 'lobby') {
           state = 'playing';
+          startRec();
           broadcast(JSON.stringify({ type: 'start' }));
           console.log('FIGHT');
         }
@@ -200,6 +230,11 @@ setInterval(() => {
   const ev = sim.drainEvents();
   const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner });
   for (const ws of clients.keys()) { ws.send(snap); ws.send(evMsg); }
+  // record this frame (base64 snapshot + any decisions since last frame) for replay
+  if (rec && state === 'playing') {
+    rec.frames.push({ snap: Buffer.from(new Uint8Array(snap)).toString('base64'), counts: sim.counts, winner: sim.winner, dec: pendingDec.splice(0) });
+    if (sim.winner !== null) saveRec();
+  }
 }, 1000 / 12);
 
 // LLM generals: each commanded team gets fresh orders every AI_TURN seconds while
@@ -214,7 +249,9 @@ if (commanders[0] || commanders[1]) {
       aiBusy[t] = true;
       commandTeam(sim, t, commanders[t])
         .then(({ taunt, count }) => {
-          broadcast(JSON.stringify({ type: 'general', team: t, model: commanders[t].model, taunt: taunt || '…', count }));
+          const dec = { team: t, model: commanders[t].model, taunt: taunt || '…', count };
+          pendingDec.push(dec); // recorded into the next frame for replay
+          broadcast(JSON.stringify({ type: 'general', ...dec }));
           console.log(`AI ${t === 0 ? 'Red' : 'Blue'} general (${commanders[t].model}): ${taunt || '…'} [${count} orders]`);
         })
         .catch((e) => console.error(`AI team ${t} turn failed: ${e.message}`))

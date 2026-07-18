@@ -427,7 +427,7 @@ function updateProps() {
       const b = h * ST, k = xf[b + 7];
       if (k === 2 || k === 5 || k === 6) put(k, xf[b], xf[b + 1], xf[b + 2], xf[b + 3], xf[b + 4], xf[b + 5], xf[b + 6], xf[b + 8], xf[b + 9], xf[b + 10]);
     }
-  } else if (mode === 'net') {
+  } else { // net or replay: props come from the latest decoded snapshot
     const s = snaps[snaps.length - 1];
     if (s && s.props) {
       const P = s.props;
@@ -878,8 +878,86 @@ function updateHud() {
   }
 }
 
+// ---------------- replay viewer ----------------
+const replay = { frames: [], i: 0, playing: false, speed: 1, acc: 0 };
+let replayUI = null;
+function b64ToBuf(b64) {
+  const bin = atob(b64), u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8.buffer;
+}
+function setupReplayReaders() {
+  readSoldier = (i, out) => {
+    const s = snaps[snaps.length - 1]; if (!s) return false;
+    out.x = s.x[i]; out.z = s.z[i]; out.face = (s.face[i] / 255) * Math.PI * 2;
+    const f = s.flags[i];
+    out.state = f & 3; out.fighting = !!(f & 4); out.broken = !!(f & 8); out.stance = !!(f & 16); out.deathT = 0;
+    return true;
+  };
+  readUnit = (j) => {
+    const s = snaps[snaps.length - 1]; if (!s) return null; const d = s.units[j];
+    return { ax: d.ax, az: d.az, morale: d.morale, files: d.files, broken: !!(d.flags & 1), stance: !!(d.flags & 2), alive: !!(d.flags & 4) };
+  };
+}
+async function startReplay(file) {
+  let data;
+  try { data = await (await fetch(file)).json(); }
+  catch { document.body.innerHTML = `<div style="color:#eee;font:16px system-ui;padding:24px">Replay not found: ${file}<br>Pick one from <a style="color:#8ae" href="/replays">/replays</a>.</div>`; return; }
+  mode = 'replay'; you = { spectator: true };
+  aiModels = data.ai || [null, null];
+  if (data.render) renderer.setPixelRatio(Math.min(devicePixelRatio, data.render.pixelRatio || 2));
+  buildMeta(data.units);
+  setupReplayReaders();
+  Object.assign(replay, { frames: data.frames, i: 0, playing: true, speed: 1, acc: 0 });
+  buildReplayUI();
+  showFrame(0);
+}
+function showFrame(i) {
+  const F = replay.frames; if (!F.length) return;
+  i = Math.max(0, Math.min(F.length - 1, i));
+  replay.i = i;
+  snaps.length = 0; decodeSnapshot(b64ToBuf(F[i].snap));
+  countsData = F[i].counts || countsData;
+  winner = (F[i].winner ?? null);
+  aiSay[0] = aiSay[1] = '';
+  for (let k = 0; k <= i; k++) for (const d of F[k].dec || []) aiSay[d.team] = `${d.taunt} [${d.count} orders]`;
+  renderGenerals(); updateReplayUI();
+  if (i >= F.length - 1) replay.playing = false;
+}
+function jumpDecision(dir) {
+  const F = replay.frames;
+  for (let k = replay.i + dir; k >= 0 && k < F.length; k += dir) if (F[k].dec && F[k].dec.length) { showFrame(k); return; }
+}
+function updateReplayUI() {
+  if (!replayUI) return;
+  replayUI.querySelector('#rPlay').textContent = replay.playing ? '⏸ pause' : '▶ play';
+  replayUI.querySelector('#rSeek').value = replay.i;
+  replayUI.querySelector('#rTime').textContent = `${replay.i}/${replay.frames.length - 1} · ${(replay.i / 12).toFixed(1)}/${(replay.frames.length / 12).toFixed(1)}s`;
+}
+function buildReplayUI() {
+  if (replayUI) return;
+  const bar = document.createElement('div');
+  bar.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:rgba(10,14,20,.92);color:#ddd;font:13px system-ui;padding:8px 12px;display:flex;gap:8px;align-items:center;z-index:20;pointer-events:auto';
+  bar.innerHTML = '<button id="rPlay">⏸ pause</button><button id="rPrev">⏮</button><button id="rNext">⏭</button>' +
+    '<button id="rPrevD">◀ decision</button><button id="rNextD">decision ▶</button>' +
+    '<label>speed <select id="rSpeed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label>' +
+    '<input id="rSeek" type="range" min="0" max="0" value="0" style="flex:1"><span id="rTime" style="min-width:130px;text-align:right"></span>';
+  document.body.appendChild(bar); replayUI = bar;
+  const q = (id) => bar.querySelector(id);
+  q('#rSeek').max = replay.frames.length - 1;
+  q('#rPlay').onclick = () => { if (!replay.playing && replay.i >= replay.frames.length - 1) showFrame(0); replay.playing = !replay.playing; updateReplayUI(); };
+  q('#rPrev').onclick = () => { replay.playing = false; showFrame(replay.i - 1); };
+  q('#rNext').onclick = () => { replay.playing = false; showFrame(replay.i + 1); };
+  q('#rPrevD').onclick = () => { replay.playing = false; jumpDecision(-1); };
+  q('#rNextD').onclick = () => { replay.playing = false; jumpDecision(1); };
+  q('#rSpeed').onchange = (e) => { replay.speed = +e.target.value; };
+  q('#rSeek').oninput = (e) => { replay.playing = false; showFrame(+e.target.value); };
+}
+
 // ---------------- main loop ----------------
-connect();
+// ?replay=replays/xxx.json opens the review viewer instead of a live battle
+const replayParam = new URLSearchParams(location.search).get('replay');
+if (replayParam) startReplay(replayParam); else connect();
 let last = performance.now(), acc = 0;
 const STEP = 1 / 60;
 function frame(now) {
@@ -893,6 +971,10 @@ function frame(now) {
     for (const ev of sim.drainEvents()) handleEvent(ev);
     statsData = sim.stats; countsData = sim.counts || countsData;
     if (sim.winner !== null) winner = sim.winner;
+  }
+  if (mode === 'replay' && replay.playing) {
+    replay.acc += dt * replay.speed * 12; // frames were recorded at 12 Hz
+    if (replay.acc >= 1) { showFrame(replay.i + Math.floor(replay.acc)); replay.acc %= 1; }
   }
 
   updateCamera(dt);

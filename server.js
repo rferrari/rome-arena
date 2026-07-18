@@ -182,7 +182,9 @@ setInterval(() => {
   tick++;
   const snap = snapshot();
   const ev = sim.drainEvents();
-  const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner, flags: sim.flags, scores: sim.scores });
+  // flags carry a live soldier ref (cyclic) — send only the plain render fields
+  const flags = sim.flags ? sim.flags.map((f) => ({ team: f.team, x: f.x, z: f.z, state: f.state })) : undefined;
+  const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner, flags, scores: sim.scores });
   for (const ws of clients.keys()) { ws.send(snap); ws.send(evMsg); }
 }, 1000 / 12);
 

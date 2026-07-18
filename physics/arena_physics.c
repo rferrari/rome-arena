@@ -63,9 +63,13 @@ static void do_breach(float x, float y, float z, float r); // boulder-blasts sta
 
 // ---- jointed ragdoll pool (real box3d Humans, spawned on death, capped) ----
 #define RAGDOLL_MAX 128
+// per-bone render data: the capsule's local midpoint + a quaternion aligning the
+// render capsule's Y axis to the bone's capsule axis, so each bone draws as a
+// correctly-placed, correctly-oriented capsule (the box3d human shape).
+typedef struct { b3Vec3 mid; b3Quat align; float radius; float halfLen; int ok; } RagBone;
 static Human g_rag[RAGDOLL_MAX];
 static float g_ragBorn[RAGDOLL_MAX];
-static float g_ragExt[RAGDOLL_MAX][bone_count][3]; // per-bone render half-extents
+static RagBone g_ragBone[RAGDOLL_MAX][bone_count];
 static int g_ragCap = 0, g_ragNext = 0;
 static float g_ragLife = 5.0f, g_ragTime = 0.0f;
 static int g_renderCount = 0; // bodies + active ragdoll bones written to the buffer
@@ -161,19 +165,26 @@ void arena_spawn_ragdoll(float x, float y, float z, float vx, float vy, float vz
   Human_ApplyRandomAngularImpulse(h, 8.0f);
   g_ragBorn[slot] = g_ragTime;
   for (int b = 0; b < bone_count; b++) {
-    g_ragExt[slot][b][0] = 0;
+    RagBone* rb = &g_ragBone[slot][b];
+    rb->ok = 0;
     b3BodyId id = h->bones[b].bodyId;
     if (!b3Body_IsValid(id)) continue;
     b3ShapeId sh;
-    if (b3Body_GetShapes(id, &sh, 1) != 1) continue;
+    if (b3Body_GetShapes(id, &sh, 1) != 1 || b3Shape_GetType(sh) != b3_capsuleShape) continue;
     b3Filter f = { CAT_RAGDOLL, CAT_STATIC | CAT_BRICK, -(slot + 1) };
     b3Shape_SetFilter(sh, f, false);
-    if (b3Shape_GetType(sh) == b3_capsuleShape) {
-      b3Capsule c = b3Shape_GetCapsule(sh);
-      float dx = c.center2.x - c.center1.x, dy = c.center2.y - c.center1.y, dz = c.center2.z - c.center1.z;
-      float len = sqrtf(dx * dx + dy * dy + dz * dz);
-      g_ragExt[slot][b][0] = c.radius; g_ragExt[slot][b][1] = len * 0.5f + c.radius; g_ragExt[slot][b][2] = c.radius;
-    } else { g_ragExt[slot][b][0] = 0.12f; g_ragExt[slot][b][1] = 0.14f; g_ragExt[slot][b][2] = 0.12f; }
+    b3Capsule c = b3Shape_GetCapsule(sh);
+    b3Vec3 axis = b3Sub(c.center2, c.center1);
+    float len = b3Length(axis);
+    rb->mid = (b3Vec3){ (c.center1.x + c.center2.x) * 0.5f, (c.center1.y + c.center2.y) * 0.5f, (c.center1.z + c.center2.z) * 0.5f };
+    rb->radius = c.radius; rb->halfLen = len * 0.5f; rb->ok = 1;
+    // quaternion that rotates the render capsule's +Y onto this bone's capsule axis
+    if (len < 1e-6f) { rb->align = b3Quat_identity; continue; }
+    b3Vec3 d = b3Normalize(axis), up = { 0, 1, 0 };
+    float dot = b3Dot(up, d);
+    if (dot > 0.9999f) rb->align = b3Quat_identity;
+    else if (dot < -0.9999f) rb->align = b3MakeQuatFromAxisAngle((b3Vec3){ 1, 0, 0 }, PI_F);
+    else rb->align = b3MakeQuatFromAxisAngle(b3Normalize(b3Cross(up, d)), acosf(dot));
   }
 }
 
@@ -356,15 +367,19 @@ static void write_transforms(void) {
   for (int i = 0; i < g_ragCap; i++) {
     if (!g_rag[i].isSpawned) continue;
     for (int b = 0; b < bone_count; b++) {
-      if (g_ragExt[i][b][0] == 0 || rc >= g_cap) continue;
+      RagBone* rb = &g_ragBone[i][b];
+      if (!rb->ok || rc >= g_cap) continue;
       b3BodyId id = g_rag[i].bones[b].bodyId;
       if (!b3Body_IsValid(id)) continue;
       float* o = g_xf + rc * XF_STRIDE;
       b3WorldTransform t = b3Body_GetTransform(id);
-      o[0] = (float) t.p.x; o[1] = (float) t.p.y; o[2] = (float) t.p.z;
-      o[3] = t.q.v.x; o[4] = t.q.v.y; o[5] = t.q.v.z; o[6] = t.q.s;
+      // capsule world centre + orientation (bodyPos + bodyRot*mid, bodyRot*align)
+      b3Vec3 wp = b3Add((b3Vec3){ (float) t.p.x, (float) t.p.y, (float) t.p.z }, b3RotateVector(t.q, rb->mid));
+      b3Quat wq = b3MulQuat(t.q, rb->align);
+      o[0] = wp.x; o[1] = wp.y; o[2] = wp.z;
+      o[3] = wq.v.x; o[4] = wq.v.y; o[5] = wq.v.z; o[6] = wq.s;
       o[7] = (float) KIND_RAGDOLL;
-      o[8] = g_ragExt[i][b][0]; o[9] = g_ragExt[i][b][1]; o[10] = g_ragExt[i][b][2];
+      o[8] = rb->radius; o[9] = rb->halfLen; o[10] = rb->radius;
       rc++;
     }
   }

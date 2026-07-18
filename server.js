@@ -5,7 +5,7 @@
 // JSON events/stats.
 import { createSim } from './sim.js';
 import { createArena } from './physics/arena_api.js';
-import { CONFIG } from './physics/config.js';
+import { CONFIG, setTier } from './physics/config.js';
 import { resolveProvider } from './ai/providers.js';
 import { commandTeam } from './ai/commander.js';
 
@@ -18,9 +18,10 @@ const argStr = (name, def) => {
   return i > -1 ? process.argv[i + 1] : def;
 };
 const PORT = arg('port', 8321);
-const PLAYERS = [Math.min(4, Math.max(1, arg('t0', 2))), Math.min(4, Math.max(1, arg('t1', 2)))];
-const FORT = arg('fort', 0) > 0; // --fort 1 spawns a central destructible castle
-const AI_TURN = arg('aiturn', 4); // seconds between LLM-general orders
+const TIER = setTier(argStr('tier', CONFIG.tier)); // low|mid|high|ultra scales the whole scene
+const PLAYERS = [Math.min(4, Math.max(1, arg('t0', CONFIG.players[0]))), Math.min(4, Math.max(1, arg('t1', CONFIG.players[1])))];
+const FORT = arg('fort', 0) > 0; // --fort 1 spawns per-team destructible castles
+const AI_TURN = arg('aiturn', 10); // seconds between LLM-general orders (mind Groq TPM limits)
 const AUTOSTART = arg('autostart', 0) > 0; // begin the battle with no human FIGHT press
 
 // LLM generals per team: --ai0 groq --ai1 mock  (providers: groq|openai|pioneer|mock|none)
@@ -64,7 +65,8 @@ function claimSlot() {
 function initMsg(who) {
   return JSON.stringify({
     type: 'init', players: PLAYERS, you: who, state,
-    ai: commanders.map((c) => (c ? c.model : null)), // model per team (null = human/built-in AI)
+    ai: commanders.map((c) => (c ? c.model : null)), // LLM model per team (null = human/built-in AI)
+    tier: CONFIG.tier, render: CONFIG.render,        // so the client matches the server's quality tier
     units: sim.units.map((u) => ({
       id: u.id, team: u.team, slot: u.slot, type: u.typeKey,
       ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.type.n,
@@ -139,7 +141,10 @@ Bun.serve({
     const url = new URL(req.url);
     const path = url.pathname === '/' ? '/battle.html' : url.pathname;
     const file = Bun.file(import.meta.dir + path);
-    return (await file.exists()) ? new Response(file) : new Response('not found', { status: 404 });
+    // no-store so the browser never serves a stale battle.js / arena.wasm after a rebuild
+    return (await file.exists())
+      ? new Response(file, { headers: { 'Cache-Control': 'no-store' } })
+      : new Response('not found', { status: 404 });
   },
   websocket: {
     open(ws) {
@@ -199,7 +204,7 @@ setInterval(() => {
 
 // LLM generals: each commanded team gets fresh orders every AI_TURN seconds while
 // the battle runs. Turns are async (network) and guarded so they never overlap;
-// the general's taunt is broadcast to the ticker.
+// the general's decision is broadcast to the client.
 const aiBusy = [false, false];
 if (commanders[0] || commanders[1]) {
   setInterval(() => {
@@ -218,4 +223,4 @@ if (commanders[0] || commanders[1]) {
   }, 1000 * AI_TURN);
 }
 
-console.log(`rome-arena server on http://localhost:${PORT}  (${PLAYERS[0]}v${PLAYERS[1]}, lobby open — press FIGHT in a client to start)`);
+console.log(`rome-arena server on http://localhost:${PORT}  (tier=${TIER}, ${PLAYERS[0]}v${PLAYERS[1]}${FORT ? ', forts' : ''}, lobby open — press FIGHT in a client to start)`);

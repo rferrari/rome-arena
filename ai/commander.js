@@ -91,7 +91,7 @@ export async function commandTeam(sim, team, cfg) {
       { role: 'system', content: SYSTEM(team) },
       { role: 'user', content: serializeState(sim, team) },
     ];
-    plan = parseOrders(await chat(cfg, messages));
+    plan = parseOrders(await chat(cfg, messages, { maxTokens: 700 })); // keep tokens/turn low (rate limits)
   }
   const count = apply(sim, team, plan.orders);
   return { taunt: plan.taunt, count };

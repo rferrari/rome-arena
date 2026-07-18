@@ -3,7 +3,6 @@
 // using the exact same sim.js module.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { createSim, TYPES, FIELD_W, FIELD_D, SPACING } from './sim.js';
 import { createArena } from './physics/arena_api.js';
 import { CONFIG } from './physics/config.js';
@@ -354,24 +353,36 @@ for (const m of [brickMesh, ragdollMesh]) {
   m.castShadow = false;
   scene.add(m);
 }
-// ---------------- VRM leaders (one champion per team, rest of army instanced) ----------------
-const LEADER_VRM = ['./assets/vrm/guard.vrm', './assets/vrm/crusader.vrm']; // team 0, team 1
-const leaderVrm = [null, null];       // loaded VRM objects (null until loaded / if disabled)
-const leaderIndex = [-1, -1];         // soldier instance index rendered as the VRM leader
-const leaderState = [null, null];     // {x, z, face, alive} filled each frame
+// ---------------- champion leaders (one animated GLB gladiator per team) ----------------
+// Small CC0 KayKit rigs (~1.6 MB) with embedded Walking_A / Idle / Death_A clips.
+// The rest of each army stays instanced; only the leader is a skinned mesh.
+const LEADER_MODEL = ['./assets/mobs/gladiators/knight.glb', './assets/mobs/gladiators/barbarian.glb'];
+const leaders = [null, null];         // { root, mixer, actions, current, prevX, prevZ }
+const leaderIndex = [-1, -1];         // soldier instance index rendered as the leader
+const leaderState = [null, null];     // {x, z, face, state} filled each frame
+function setLeaderAnim(L, name) {
+  if (L.current === name || !L.actions[name]) return;
+  const to = L.actions[name]; to.reset().setEffectiveWeight(1).play();
+  const from = L.actions[L.current];
+  if (from) from.crossFadeTo(to, 0.25, false);
+  L.current = name;
+}
 (function loadLeaders() {
   if (CONFIG.heroesPerTeam <= 0) return; // leaders disabled
   const loader = new GLTFLoader();
-  loader.register((p) => new VRMLoaderPlugin(p));
   for (let team = 0; team < 2; team++) {
-    loader.loadAsync(LEADER_VRM[team]).then((gltf) => {
-      const vrm = gltf.userData.vrm;
-      VRMUtils.rotateVRM0(vrm);                    // orient VRM0 models to face +Z
-      vrm.scene.traverse((o) => { o.frustumCulled = false; });
-      vrm.scene.visible = false;
-      scene.add(vrm.scene);
-      leaderVrm[team] = vrm;
-    }).catch((e) => console.warn('leader VRM failed to load:', LEADER_VRM[team], e));
+    loader.loadAsync(LEADER_MODEL[team]).then((gltf) => {
+      const root = gltf.scene;
+      root.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
+      root.scale.setScalar(1.7);
+      root.visible = false;
+      scene.add(root);
+      const mixer = new THREE.AnimationMixer(root);
+      const act = (n) => { const c = THREE.AnimationClip.findByName(gltf.animations, n); return c ? mixer.clipAction(c) : null; };
+      const actions = { idle: act('Idle'), walk: act('Walking_A'), death: act('Death_A') };
+      if (actions.idle) actions.idle.play();
+      leaders[team] = { root, mixer, actions, current: 'idle', prevX: 0, prevZ: 0 };
+    }).catch((e) => console.warn('leader model failed to load:', LEADER_MODEL[team], e));
   }
 })();
 
@@ -621,8 +632,8 @@ function updateInstances(dt) {
     const isCav = u.type === 'cavalry';
 
     const lt = i === leaderIndex[0] ? 0 : i === leaderIndex[1] ? 1 : -1;
-    if (lt >= 0 && leaderVrm[lt]) { // this soldier is rendered as the VRM champion
-      leaderState[lt] = { x: rs.x, z: rs.z, face: rs.face, alive: rs.state === 0 };
+    if (lt >= 0 && leaders[lt]) { // this soldier is rendered as the animated champion
+      leaderState[lt] = { x: rs.x, z: rs.z, face: rs.face, state: rs.state };
       dummy.position.set(0, -10, 0); dummy.scale.setScalar(0); dummy.rotation.set(0, 0, 0);
       dummy.updateMatrix(); soldierMesh.setMatrixAt(i, dummy.matrix);
       continue;
@@ -696,17 +707,20 @@ function updateInstances(dt) {
   riderMesh.instanceMatrix.needsUpdate = true;
   weaponMesh.instanceMatrix.needsUpdate = true;
 
-  // place each team's VRM champion at its leader soldier (facing = heading, since
-  // rotateVRM0 makes the model face +Z which matches forward=(sin,cos))
+  // place & animate each team's champion at its leader soldier; walk when moving,
+  // idle when still, death when killed (KayKit rigs face -Z, hence face + PI)
   for (let t = 0; t < 2; t++) {
-    const vrm = leaderVrm[t], st = leaderState[t];
-    if (!vrm) continue;
-    if (st && st.alive) {
-      vrm.scene.visible = true;
-      vrm.scene.position.set(st.x, 0, st.z);
-      vrm.scene.rotation.y = st.face;
-    } else vrm.scene.visible = false;
-    if (vrm.update) vrm.update(dt);
+    const L = leaders[t], st = leaderState[t];
+    if (!L) continue;
+    if (st && st.state !== 2) {
+      L.root.visible = true;
+      L.root.position.set(st.x, 0, st.z);
+      L.root.rotation.y = st.face + Math.PI;
+      const sp = Math.hypot(st.x - L.prevX, st.z - L.prevZ);
+      L.prevX = st.x; L.prevZ = st.z;
+      setLeaderAnim(L, st.state === 1 ? 'death' : sp > 0.02 ? 'walk' : 'idle');
+    } else L.root.visible = false;
+    L.mixer.update(dt);
     leaderState[t] = null;
   }
 

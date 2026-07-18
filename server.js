@@ -20,13 +20,14 @@ const TIER = setTier(argStr('tier', CONFIG.tier)); // low|mid|high|ultra scales 
 // tier sets the default army sizes; --t0/--t1 still override
 const PLAYERS = [Math.min(4, Math.max(1, arg('t0', CONFIG.players[0]))), Math.min(4, Math.max(1, arg('t1', CONFIG.players[1])))];
 const FORT = arg('fort', 0) > 0; // --fort 1 spawns per-team destructible castles
+const CTF = arg('ctf', 0) > 0;  // --ctf 1 = capture-the-flag mode (small squads + flags)
 
 const clients = new Map(); // ws -> {team, slot} | {spectator:true}
 let sim, state; // state: 'lobby' | 'playing'
 const arena = await createArena({ maxBodies: CONFIG.maxBodies }); // one box3d world, reused per battle
 
 function resetSim(seed = (Math.random() * 1e9) | 0) {
-  sim = createSim({ seed, players: PLAYERS, arena, fort: FORT });
+  sim = createSim({ seed, players: PLAYERS, arena, fort: FORT, ctf: CTF });
   state = 'lobby';
   for (const who of clients.values()) if (!who.spectator) sim.ai.delete(`${who.team}:${who.slot}`);
 }
@@ -49,9 +50,10 @@ function initMsg(who) {
   return JSON.stringify({
     type: 'init', players: PLAYERS, you: who, state,
     tier: CONFIG.tier, render: CONFIG.render, // so the client matches the server's quality tier
+    ctf: CTF,
     units: sim.units.map((u) => ({
       id: u.id, team: u.team, slot: u.slot, type: u.typeKey,
-      ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.type.n,
+      ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.n0,
     })),
   });
 }
@@ -180,7 +182,7 @@ setInterval(() => {
   tick++;
   const snap = snapshot();
   const ev = sim.drainEvents();
-  const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner });
+  const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner, flags: sim.flags, scores: sim.scores });
   for (const ws of clients.keys()) { ws.send(snap); ws.send(evMsg); }
 }, 1000 / 12);
 

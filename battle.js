@@ -184,9 +184,10 @@ async function startSolo() {
   const arena = await createArena({ maxBodies: CONFIG.maxBodies }); // browser-side box3d world for solo play
   mode = 'solo';
   you = { team: 0, slot: -1 }; // -1 = owns all of team 0
-  sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena, fort: location.hash.includes('fort') });
+  const ctf = location.hash.includes('ctf');
+  sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena, fort: location.hash.includes('fort'), ctf });
   for (let p = 0; p < 2; p++) sim.ai.delete(`0:${p}`);
-  buildMeta(sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, n: u.type.n })));
+  buildMeta(sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, n: u.n0 })));
   setupSoloReaders();
   showLobby([
     { team: 0, slot: 0, human: true }, { team: 0, slot: 1, human: true },
@@ -222,6 +223,8 @@ function connect() {
       } else if (m.type === 'ev') {
         for (const ev of m.e) handleEvent(ev);
         statsData = m.stats; countsData = m.counts || countsData;
+        if (m.flags) flagsData = m.flags;
+        if (m.scores) scoresData = m.scores;
         if (m.winner !== null && m.winner !== undefined) winner = m.winner;
       }
     } else if (mode === 'net') decodeSnapshot(e.data);
@@ -387,6 +390,33 @@ function setLeaderAnim(L, name) {
     }).catch((e) => console.warn('leader model failed to load:', LEADER_MODEL[team], e));
   }
 })();
+
+// ---------------- capture the flag: banners + score ----------------
+let flagsData = null, scoresData = null;
+const flagGroups = [0, 1].map((team) => {
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 3, 6), new THREE.MeshStandardMaterial({ color: 0x6b5330 }));
+  pole.position.y = 1.5;
+  const cloth = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.7, 0.06),
+    new THREE.MeshStandardMaterial({ color: team === 0 ? 0xd23c3c : 0x3c64d2, side: THREE.DoubleSide, emissive: team === 0 ? 0x400 : 0x004 }));
+  cloth.position.set(0.62, 2.55, 0);
+  g.add(pole, cloth); g.visible = false; scene.add(g);
+  return g;
+});
+const scoreEl = document.createElement('div');
+scoreEl.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);font-size:22px;font-weight:bold;text-shadow:0 2px 5px #000;display:none';
+document.body.appendChild(scoreEl);
+function updateFlags() {
+  const f = mode === 'solo' ? (sim && sim.flags) : flagsData;
+  const sc = mode === 'solo' ? (sim && sim.scores) : scoresData;
+  if (!f) { flagGroups[0].visible = flagGroups[1].visible = false; scoreEl.style.display = 'none'; return; }
+  for (let t = 0; t < 2; t++) {
+    const fl = f[t]; if (!fl) continue;
+    flagGroups[t].visible = true;
+    flagGroups[t].position.set(fl.x, fl.state === 'carried' ? 0.6 : 0, fl.z); // ride higher when carried
+  }
+  if (sc) { scoreEl.style.display = 'block'; scoreEl.innerHTML = `<span style="color:#e88">🚩 Red ${sc[0]}</span> &nbsp; <span style="color:#8ae">Blue ${sc[1]} 🚩</span>`; }
+}
 
 let lastBricks = 0, lastRags = 0;
 function updateProps() {
@@ -871,6 +901,7 @@ function frame(now) {
   if (mode) {
     updateInstances(dt);
     updateProps();
+    updateFlags();
     updateProjectiles(dt);
     updateParticles(dt);
     hudT -= dt;

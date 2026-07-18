@@ -12,6 +12,9 @@ start: ## run the battle server; TIER=low|mid|high|ultra, FORT=1 adds castles
 stress: ## max-scale stress test: ultra tier + castles
 	bun server.js --port $(PORT) --tier ultra --seed $(SEED) --fort 1
 
+ctf: ## capture-the-flag: small squads race to steal the enemy flag
+	bun server.js --port $(PORT) --tier $(TIER) --ctf 1 --seed $(SEED)
+
 test: ## headless sim smoke test — asserts combat mechanics fire
 	bun test_sim.js
 

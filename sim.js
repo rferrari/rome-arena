@@ -147,7 +147,8 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     const xf = arena.transforms, ST = arena.XF_STRIDE, n = arena.count, hs = CONFIG.fort.halfSize;
     for (let f = 0; f < 2; f++) {
       nav[f].clearBlocked();
-      for (let h = 0; h < n; h++) { const b = h * ST; if (xf[b + 7] === 2 && xf[b + 1] > 0.35) nav[f].blockWorld(xf[b], xf[b + 2]); }
+      // block only standing walls (kind 2); breached rubble (kind 6) opens a path
+      for (let h = 0; h < n; h++) { const b = h * ST; if (xf[b + 7] === 2) nav[f].blockWorld(xf[b], xf[b + 2]); }
       const fz = fortCenter[f][1], sgn = fz >= 0 ? 1 : -1;
       nav[f].compute(0, fz - sgn * (hs - 2)); // goal = courtyard just inside the gate
     }
@@ -360,18 +361,13 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
         } else setVel(s, enemy.x, enemy.z, s.speed * speedMult, dt);
       } else {
         if (T.ranged) fireArrowMaybe(s, dt);
-        // No enemy nearby: in fort mode, navigate the flow field toward the
-        // objective (defend own fort / assault the enemy's); else hold formation.
-        if (nav && T !== TYPES.catapult) {
-          const gf = teamStance[u.team] === 'attack' ? 1 - u.team : u.team; // target fort
-          const fc = fortCenter[gf];
-          const insideTarget = Math.hypot(s.x - fc[0], s.z - fc[1]) < CONFIG.fort.halfSize - 1;
-          if (teamStance[u.team] === 'defend' && insideTarget) { s.face = u.facing; setStop(s); } // hold the courtyard
-          else {
-            const dir = nav[gf].sample(s.x, s.z);
-            if (dir) { s.face = Math.atan2(dir.x, dir.z); setVel(s, s.x + dir.x, s.z + dir.z, s.speed * speedMult, dt); }
-            else moveToSlot(s, u, speedMult, dt); // at/near goal — brawl in formation
-          }
+        // No enemy nearby: only an ATTACKING team marches (flow field, around walls
+        // and through the gate, toward the enemy fort). Defenders hold their formed
+        // line in front of their own castle rather than piling inside it.
+        if (nav && teamStance[u.team] === 'attack' && T !== TYPES.catapult) {
+          const dir = nav[1 - u.team].sample(s.x, s.z); // enemy fort's field
+          if (dir) { s.face = Math.atan2(dir.x, dir.z); setVel(s, s.x + dir.x, s.z + dir.z, s.speed * speedMult, dt); }
+          else moveToSlot(s, u, speedMult, dt); // reached the objective — brawl in formation
         } else moveToSlot(s, u, speedMult, dt);
       }
     }
@@ -452,9 +448,12 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
         if (bh < 0) continue;
         const victim = soldierByHandle.get(oh);
         if (victim) { stats.boulders.kills += damage(victim, BOULDER_DMG, 'ranged'); boulders.find((x) => x.h === bh).hits++; }
-        else if (xf[oh * ST + 7] === 4 /* KIND_STATIC: ground/wall */) {
-          explode(xf[bh * ST], xf[bh * ST + 2]); // splash at the rock's position
-          const bl = boulders.find((x) => x.h === bh); if (bl) bl.born = -1e9; // mark spent
+        else { // hit terrain, wall, or rubble — splash at the rock (walls breach in WASM)
+          const k = xf[oh * ST + 7];
+          if (k === 4 || k === 2 || k === 6) {
+            explode(xf[bh * ST], xf[bh * ST + 2]);
+            const bl = boulders.find((x) => x.h === bh); if (bl) bl.born = -1e9; // mark spent
+          }
         }
       }
       for (let i = boulders.length - 1; i >= 0; i--) {

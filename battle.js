@@ -392,21 +392,21 @@ function updateProps() {
   const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
     dummy.position.set(x, y, z);
     dummy.quaternion.set(qx, qy, qz, qw);
-    if (kind === 2) {
-      if (nb >= brickMesh.count) return;
-      dummy.scale.set(hx * 2, hy * 2, hz * 2);
-      dummy.updateMatrix(); brickMesh.setMatrixAt(nb++, dummy.matrix);
-    } else {
+    if (kind === 5) { // ragdoll corpse (capsule)
       if (nr >= ragdollMesh.count) return;
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix(); ragdollMesh.setMatrixAt(nr++, dummy.matrix);
+    } else { // brick (2) or rubble (6)
+      if (nb >= brickMesh.count) return;
+      dummy.scale.set(hx * 2, hy * 2, hz * 2);
+      dummy.updateMatrix(); brickMesh.setMatrixAt(nb++, dummy.matrix);
     }
   };
   if (mode === 'solo' && sim) {
     const xf = sim.arena.transforms, ST = sim.arena.XF_STRIDE, cnt = sim.arena.count;
     for (let h = 0; h < cnt; h++) {
       const b = h * ST, k = xf[b + 7];
-      if (k === 2 || k === 5) put(k, xf[b], xf[b + 1], xf[b + 2], xf[b + 3], xf[b + 4], xf[b + 5], xf[b + 6], xf[b + 8], xf[b + 9], xf[b + 10]);
+      if (k === 2 || k === 5 || k === 6) put(k, xf[b], xf[b + 1], xf[b + 2], xf[b + 3], xf[b + 4], xf[b + 5], xf[b + 6], xf[b + 8], xf[b + 9], xf[b + 10]);
     }
   } else if (mode === 'net') {
     const s = snaps[snaps.length - 1];

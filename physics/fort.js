@@ -22,8 +22,9 @@ let drift = 0;
 for (let i = 0; i < nBricks; i++) drift = Math.max(drift, Math.abs(arena.transforms[(base + i) * XF + 1] - startY[i]));
 console.log(`max brick settle drift: ${drift.toFixed(3)} m`);
 
-// bombard the front wall / keep with a volley of boulders
-for (let i = 0; i < 12; i++) arena.addBoulder(-30 + i * 5, 14, -40, (Math.sin(i) * 2), 2, 26, 1.4);
+// bombard the solid back wall (z=+8) head-on at brick height so boulders strike
+// the masonry (static walls only breach where a rock actually hits them)
+for (let i = 0; i < 8; i++) arena.addBoulder(-7 + i * 2, 2.5, 30, 0, 0, -42, 1.4);
 for (let i = 0; i < 150; i++) arena.step(1 / 60, 8);
 
 let moved = 0, maxDisp = 0;

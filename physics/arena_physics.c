@@ -23,7 +23,7 @@
 #define SOL_DENSITY 1.0f
 
 // body kinds (also written into the transform buffer's flags slot)
-enum { KIND_DEAD = 0, KIND_SOLDIER = 1, KIND_BRICK = 2, KIND_BOULDER = 3, KIND_STATIC = 4, KIND_RAGDOLL = 5 };
+enum { KIND_DEAD = 0, KIND_SOLDIER = 1, KIND_BRICK = 2, KIND_BOULDER = 3, KIND_STATIC = 4, KIND_RAGDOLL = 5, KIND_RUBBLE = 6 };
 
 // collision categories. Ragdolls (dead soldiers) collide only with the world/rubble
 // so corpses fall realistically without blocking the living battle.
@@ -54,6 +54,7 @@ static int* g_contacts = NULL;
 static int g_contactCount = 0;
 
 static void write_transforms(void); // defined after arena_step
+static void do_breach(float x, float y, float z, float r); // boulder-blasts standing walls to rubble
 
 // ---------------- Phase 1 smoke API (unchanged) ----------------
 static b3BodyId g_box;
@@ -256,7 +257,8 @@ void arena_step(float dt, int subSteps) {
 
   b3World_Step(g_world, dt, subSteps);
 
-  // drain begin-touch contacts into the shared int buffer as (handleA, handleB)
+  // drain begin-touch contacts into the shared int buffer as (handleA, handleB),
+  // and blast standing walls into rubble where a boulder strikes.
   b3ContactEvents ce = b3World_GetContactEvents(g_world);
   g_contactCount = 0;
   for (int i = 0; i < ce.beginCount && g_contactCount < MAX_CONTACTS; i++) {
@@ -265,6 +267,12 @@ void arena_step(float dt, int subSteps) {
     g_contacts[g_contactCount * 2] = ha;
     g_contacts[g_contactCount * 2 + 1] = hb;
     g_contactCount++;
+    int ka = g_kind[ha], kb = g_kind[hb];
+    if ((ka == KIND_BOULDER && kb == KIND_BRICK) || (ka == KIND_BRICK && kb == KIND_BOULDER)) {
+      int brick = (ka == KIND_BRICK) ? ha : hb;
+      b3WorldTransform t = b3Body_GetTransform(g_bodies[brick]);
+      do_breach((float) t.p.x, (float) t.p.y, (float) t.p.z, 4.0f);
+    }
   }
 
   write_transforms();
@@ -287,6 +295,24 @@ static void write_transforms(void) {
 
 // Fill the transform buffer without advancing physics (fresh fort at lobby time).
 EMSCRIPTEN_KEEPALIVE void arena_sync(void) { write_transforms(); }
+
+// Convert standing (static) wall bricks within radius r of an impact into dynamic
+// rubble and kick them outward, so a boulder punches a breach instead of nudging
+// one brick. Rubble is KIND_RUBBLE so the flow field stops treating it as a wall.
+static void do_breach(float x, float y, float z, float r) {
+  const float r2 = r * r;
+  for (int h = 0; h < g_count; h++) {
+    if (g_kind[h] != KIND_BRICK) continue; // only standing (static) walls
+    b3WorldTransform t = b3Body_GetTransform(g_bodies[h]);
+    const float dx = (float) t.p.x - x, dy = (float) t.p.y - y, dz = (float) t.p.z - z;
+    if (dx * dx + dy * dy + dz * dz > r2) continue;
+    b3Body_SetType(g_bodies[h], b3_dynamicBody);
+    b3Body_SetAwake(g_bodies[h], true);
+    const float d = sqrtf(dx * dx + dz * dz) + 0.01f;
+    b3Body_ApplyLinearImpulseToCenter(g_bodies[h], (b3Vec3){ dx / d * 40.0f, 25.0f, dz / d * 40.0f }, true);
+    g_kind[h] = KIND_RUBBLE;
+  }
+}
 
 // Contacts drained during the last arena_step: a flat (handleA, handleB) int
 // buffer of length 2*arena_contact_count(). JS maps handles -> game objects.
@@ -327,9 +353,12 @@ void arena_ragdoll(int h, float vx, float vy, float vz, float spin) {
 
 // ---- destructible masonry (ported from box3d samples sample_siege/sample_city) ----
 
+// Fort bricks spawn STATIC so a crowd of soldiers can't shove a wall over — only
+// a boulder impact converts nearby bricks to dynamic (see do_breach), so walls
+// stand until bombarded, then cave in.
 static int make_brick(float x, float y, float z, float hx, float hy, float hz, float yaw) {
   b3BodyDef bd = b3DefaultBodyDef();
-  bd.type = b3_dynamicBody;
+  bd.type = b3_staticBody;
   bd.position = (b3Pos){ x, y, z };
   bd.rotation = b3MakeQuatFromAxisAngle((b3Vec3){ 0.0f, 1.0f, 0.0f }, yaw);
   bd.userData = (void*)(intptr_t) g_count;

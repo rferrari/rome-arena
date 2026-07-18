@@ -4,22 +4,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Runtime & commands
 
-Runs on **Bun** (not Node). No `package.json`, no dependency install — `three` is
-loaded in the browser via an importmap CDN (`unpkg.com/three@0.169.0`), so there
-is nothing to `npm install`.
+Runs on **Bun** (not Node). No `package.json`, no dependency install — `three` and
+`@pixiv/three-vrm` load in the browser via an importmap CDN, so there is nothing to
+`npm install` to run the game.
 
 ```bash
-make start                       # run the multiplayer server on :8321 (2v2, seed 42)
+make start                       # multiplayer server on :8321 (2v2, seed 42)
+make start FORT=1                # ...with a central destructible castle
 make start PORT=9000 T0=1 T1=3   # override port / team sizes
-make test                        # headless sim smoke test (asserts combat mechanics fire)
-bun server.js --port 8321 --t0 2 --t1 2 --seed 42   # what `make start` runs
-bun test_sim.js                  # what `make test` runs
+make test                        # headless battle sim (asserts combat mechanics fire)
+make wasm                        # (maintainer) rebuild the box3d physics WASM — needs emscripten
+make wasm-test / wasm-bench / wasm-fort   # physics: smoke / perf gate / masonry destruction
 ```
 
-There is no test framework. `test_sim.js` is a single script that runs an all-AI
-battle headless and `process.exit(1)`s if any asserted mechanic (arrows, boulders,
-anti-cav bonus, charge, shield-wall blocks, routs) fails to trigger, or if a sim
-step exceeds the 30Hz budget (33ms). Add assertions there when adding mechanics.
+Physics runs in a **box3d WASM module** (`physics/arena.wasm` + `arena.mjs`).
+Those artifacts are **committed**, so `make start`/`make test` stay zero-install;
+only `make wasm` needs the emscripten toolchain (`source ~/emsdk/emsdk_env.sh`).
+The module is built as a scalar (non-SIMD), single-threaded build — see
+`physics/build.sh` / `CMakeLists.txt` for why (WASM-SIMD crashed clang; single
+thread avoids SharedArrayBuffer/COOP-COEP).
+
+There is no test framework. `test_sim.js` runs an all-AI battle headless and
+`process.exit(1)`s if any asserted mechanic (arrows, boulders, anti-cav, charge,
+shield-wall blocks, routs) fails, or if a step exceeds the 30Hz budget (33ms).
+`physics/*.js` are standalone `bun` checks for the physics layer. Add assertions
+to whichever matches when changing mechanics or the physics glue.
 
 ## Two independent apps in one repo
 
@@ -41,6 +50,23 @@ module**. `sim.js` is pure logic — no three.js, no DOM — so the exact same c
 Clients never simulate in multiplayer; they only send orders and render snapshots.
 This eliminates the whole lockstep-desync bug class.
 
+### Physics: box3d via WASM (`physics/`)
+`sim.js` owns *game logic* (AI, morale, combat, orders, stats); **box3d owns all
+physics** — soldier movement, crowd collision, projectiles, destructible masonry,
+ragdolls. The C glue (`physics/arena_physics.c`) compiles to WASM and is wrapped by
+`physics/arena_api.js` (`createArena`). Server and browser each create one arena and
+pass it to `createSim({ arena })`.
+
+The JS↔WASM boundary is **batched**: each tick JS writes soldier velocity *intents*
+into a shared HEAP buffer, calls `arena.step(dt)` once (apply intents → step world →
+write transforms), then reads every body's transform back from a second HEAP buffer
+(`arena.transforms`, stride `XF_STRIDE`) — zero per-body crossings. Bodies are
+addressed by integer handles; `sim.js` stores each soldier's handle on `s.h`.
+Boulders damage via drained contact events; arrows hit via `arena.raycast`; corpses
+become ragdolls in-place (`arena.ragdoll`, refiltered so they don't block the living).
+Tunables live in `physics/config.js`. Because the sim is server-authoritative, only
+per-process reproducibility matters, so the fast non-deterministic box3d build is fine.
+
 ### sim.js (the model)
 `createSim({ seed, players: [t0, t1] })` returns a sim object. Deterministic:
 seeded `mulberry32` PRNG (duplicated inline rather than imported from `arena.js`,
@@ -55,9 +81,10 @@ to avoid dragging three.js into the server).
 - Deployment is fixed per player slot: `COMP_FRONT` (4 melee) up front,
   `COMP_BACK` (archer, cavalry) behind, one catapult in the rear.
 - `step(dt)` is the whole tick: spatial-grid rebuild (`CELL`-sized buckets for
-  neighbor queries) → per-soldier seek/attack/separation → morale (regen/break at
-  <20/rally at ≥60/flee off-field) → catapults & projectiles & arrows → **built-in
-  AI** for any slot in `sim.ai` → winner check.
+  neighbor queries) → per-soldier decide desired velocity + melee → `arena.step`
+  (physics integrates movement/collision) → read positions back → morale
+  (regen/break at <20/rally at ≥60/flee off-field) → catapults & boulders & arrows
+  → **built-in AI** for any slot in `sim.ai` → winner check.
 - `sim.ai` is a `Set` of `"team:slot"` keys. A slot in the set is AI-driven; the
   server deletes the key when a human claims the slot and re-adds it on disconnect.
 - Order API (caller must validate ownership first): `order(unitIds, p0, p1)` — a

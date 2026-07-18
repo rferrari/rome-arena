@@ -2,6 +2,8 @@
 // (server.js); if no server responds we fall back to a local solo sim vs AI
 // using the exact same sim.js module.
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { createSim, TYPES, FIELD_W, FIELD_D, SPACING } from './sim.js';
 import { createArena } from './physics/arena_api.js';
 import { CONFIG } from './physics/config.js';
@@ -262,6 +264,12 @@ function buildRenderers() {
   soldierUnitIdx.length = 0;
   meta.units.forEach((u, j) => { for (let i = 0; i < u.n; i++) soldierUnitIdx[u.start + i] = j; });
 
+  // pick one leader soldier per team (centre of that team's first melee unit)
+  leaderIndex[0] = leaderIndex[1] = -1;
+  for (const u of meta.units) {
+    if (leaderIndex[u.team] < 0 && u.type !== 'catapult') leaderIndex[u.team] = u.start + Math.floor(u.n / 2);
+  }
+
   soldierMesh = new THREE.InstancedMesh(
     new THREE.CapsuleGeometry(0.35, 0.9, 3, 8),
     new THREE.MeshStandardMaterial({ roughness: 0.7 }),
@@ -346,6 +354,27 @@ for (const m of [brickMesh, ragdollMesh]) {
   m.castShadow = false;
   scene.add(m);
 }
+// ---------------- VRM leaders (one champion per team, rest of army instanced) ----------------
+const LEADER_VRM = ['./assets/vrm/guard.vrm', './assets/vrm/crusader.vrm']; // team 0, team 1
+const leaderVrm = [null, null];       // loaded VRM objects (null until loaded / if disabled)
+const leaderIndex = [-1, -1];         // soldier instance index rendered as the VRM leader
+const leaderState = [null, null];     // {x, z, face, alive} filled each frame
+(function loadLeaders() {
+  if (CONFIG.heroesPerTeam <= 0) return; // leaders disabled
+  const loader = new GLTFLoader();
+  loader.register((p) => new VRMLoaderPlugin(p));
+  for (let team = 0; team < 2; team++) {
+    loader.loadAsync(LEADER_VRM[team]).then((gltf) => {
+      const vrm = gltf.userData.vrm;
+      VRMUtils.rotateVRM0(vrm);                    // orient VRM0 models to face +Z
+      vrm.scene.traverse((o) => { o.frustumCulled = false; });
+      vrm.scene.visible = false;
+      scene.add(vrm.scene);
+      leaderVrm[team] = vrm;
+    }).catch((e) => console.warn('leader VRM failed to load:', LEADER_VRM[team], e));
+  }
+})();
+
 let lastBricks = 0, lastRags = 0;
 function updateProps() {
   let nb = 0, nr = 0;
@@ -591,6 +620,14 @@ function updateInstances(dt) {
     const j = soldierUnitIdx[i], u = meta.units[j];
     const isCav = u.type === 'cavalry';
 
+    const lt = i === leaderIndex[0] ? 0 : i === leaderIndex[1] ? 1 : -1;
+    if (lt >= 0 && leaderVrm[lt]) { // this soldier is rendered as the VRM champion
+      leaderState[lt] = { x: rs.x, z: rs.z, face: rs.face, alive: rs.state === 0 };
+      dummy.position.set(0, -10, 0); dummy.scale.setScalar(0); dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix(); soldierMesh.setMatrixAt(i, dummy.matrix);
+      continue;
+    }
+
     if (rs.state === 2) { dummy.position.set(0, -10, 0); dummy.scale.setScalar(0); dummy.rotation.set(0, 0, 0); }
     else if (rs.state === 1) {
       const t = rs.deathT;
@@ -658,6 +695,20 @@ function updateInstances(dt) {
   soldierMesh.instanceMatrix.needsUpdate = true;
   riderMesh.instanceMatrix.needsUpdate = true;
   weaponMesh.instanceMatrix.needsUpdate = true;
+
+  // place each team's VRM champion at its leader soldier (facing = heading, since
+  // rotateVRM0 makes the model face +Z which matches forward=(sin,cos))
+  for (let t = 0; t < 2; t++) {
+    const vrm = leaderVrm[t], st = leaderState[t];
+    if (!vrm) continue;
+    if (st && st.alive) {
+      vrm.scene.visible = true;
+      vrm.scene.position.set(st.x, 0, st.z);
+      vrm.scene.rotation.y = st.face;
+    } else vrm.scene.visible = false;
+    if (vrm.update) vrm.update(dt);
+    leaderState[t] = null;
+  }
 
   for (const c of unitCentroids) if (c && c.n) { c.x /= c.n; c.z /= c.n; }
 

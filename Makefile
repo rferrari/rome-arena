@@ -33,4 +33,4 @@ wasm-fort: ## build a castle and bombard it; assert masonry is stable then caves
 help:
 	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/'
 
-.PHONY: start test help
+.PHONY: start ai test wasm wasm-test wasm-bench wasm-fort help

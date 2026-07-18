@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Rome Arena — physics WASM smoke test</title>
+  <style>
+    body { margin: 0; font-family: system-ui, monospace; background: #111; color: #ddd; padding: 20px; }
+    #log { white-space: pre; font-size: 14px; line-height: 1.5; }
+    .pass { color: #6c6; } .fail { color: #e66; }
+  </style>
+</head>
+<body>
+  <h2>box3d WASM — browser instantiation test</h2>
+  <div id="log">loading…</div>
+  <script type="module">
+    // Proves the same arena.mjs / arena.wasm loads in a browser (dynamic ESM
+    // import + wasm fetch via import.meta.url) with NO COOP/COEP headers.
+    import { loadArena } from './arena_loader.js';
+    const el = document.getElementById('log');
+    const lines = [];
+    const out = (s) => { lines.push(s); el.textContent = lines.join('\n'); };
+    try {
+      const a = await loadArena();
+      a.createWorld();
+      a.dropTestBox(8);
+      out(`start y=${a.getTestY().toFixed(3)}`);
+      for (let i = 0; i < 150; i++) {
+        a.step(1 / 60, 4);
+        if (i % 30 === 0) out(`step ${i}: y=${a.getTestY().toFixed(3)}`);
+      }
+      const y = a.getTestY();
+      out(`final y=${y.toFixed(3)}`);
+      const ok = y > 0.4 && y < 0.6;
+      out(''); out(ok ? 'PASS: cube fell and settled on the ground' : `FAIL: settled at ${y.toFixed(3)}`);
+      el.className = ok ? 'pass' : 'fail';
+      window.__SMOKE_RESULT__ = ok ? 'PASS' : 'FAIL';
+    } catch (e) {
+      out('FAIL: ' + (e && e.stack || e));
+      el.className = 'fail';
+      window.__SMOKE_RESULT__ = 'FAIL';
+    }
+  </script>
+</body>
+</html>

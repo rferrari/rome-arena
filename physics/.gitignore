@@ -1,0 +1,2 @@
+# CMake/emscripten build tree — the committed artifacts are arena.mjs + arena.wasm
+build/

@@ -49,6 +49,8 @@ let sim = null;       // solo only
 let ws = null;
 let winner = null;
 let statsData = null, countsData = [0, 0];
+let aiModels = [null, null];       // LLM model name per team (null = human/built-in AI)
+const aiSay = ['', ''];            // each general's latest taunt + order count
 
 // per-frame read adapters, set once per mode
 let readSoldier = null, readUnit = null;
@@ -212,6 +214,11 @@ function connect() {
         setupNetReaders();
         phase = m.state;
         if (you.team === 1) { viewDir = -1; camTarget.z = -35; }
+        aiModels = m.ai || [null, null];
+        renderGenerals();
+      } else if (m.type === 'general') {
+        aiSay[m.team] = `${m.taunt} [${m.count} orders]`;
+        renderGenerals();
       } else if (m.type === 'lobby') {
         phase = m.state;
         if (phase === 'lobby') showLobby(m.roster);
@@ -779,6 +786,17 @@ function updateProjectiles(dt) {
   dummy.updateMatrix();
   for (let i = n; i < ARROW_CAP; i++) arrowMesh.setMatrixAt(i, dummy.matrix);
   arrowMesh.instanceMatrix.needsUpdate = true;
+}
+
+// ---------------- generals panel (which model commands each side + its call) ----------------
+const generalsEl = document.getElementById('generals');
+function renderGenerals() {
+  if (!aiModels[0] && !aiModels[1]) { generalsEl.style.display = 'none'; return; }
+  const name = (t) => `<span class="t${t}">${t === 0 ? '🔴 RED' : '🔵 BLUE'}: ${aiModels[t] || '—'}</span>`;
+  const say = (t) => (aiSay[t] ? `<span class="t${t}">${t === 0 ? '🔴' : '🔵'} ${aiSay[t]}</span>` : '');
+  const sep = aiSay[0] && aiSay[1] ? ' &nbsp;·&nbsp; ' : '';
+  generalsEl.innerHTML = `${name(0)}<span class="vs">vs</span>${name(1)}<div class="say">${say(0)}${sep}${say(1)}</div>`;
+  generalsEl.style.display = 'block';
 }
 
 // ---------------- HUD / mechanics panel ----------------

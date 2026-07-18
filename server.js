@@ -64,6 +64,7 @@ function claimSlot() {
 function initMsg(who) {
   return JSON.stringify({
     type: 'init', players: PLAYERS, you: who, state,
+    ai: commanders.map((c) => (c ? c.model : null)), // model per team (null = human/built-in AI)
     units: sim.units.map((u) => ({
       id: u.id, team: u.team, slot: u.slot, type: u.typeKey,
       ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.type.n,
@@ -208,8 +209,8 @@ if (commanders[0] || commanders[1]) {
       aiBusy[t] = true;
       commandTeam(sim, t, commanders[t])
         .then(({ taunt, count }) => {
-          if (taunt) broadcast(JSON.stringify({ type: 'ev', e: [['note', `${t === 0 ? 'Red' : 'Blue'} general: ${taunt}`]], stats: sim.stats, counts: sim.counts, winner: sim.winner }));
-          console.log(`AI team ${t} (${commanders[t].name}): ${count} orders — ${taunt}`);
+          broadcast(JSON.stringify({ type: 'general', team: t, model: commanders[t].model, taunt: taunt || '…', count }));
+          console.log(`AI ${t === 0 ? 'Red' : 'Blue'} general (${commanders[t].model}): ${taunt || '…'} [${count} orders]`);
         })
         .catch((e) => console.error(`AI team ${t} turn failed: ${e.message}`))
         .finally(() => { aiBusy[t] = false; });

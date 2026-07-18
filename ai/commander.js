@@ -26,18 +26,33 @@ const SYSTEM = (team) =>
   `Each turn you issue movement orders; units carry them out until your next order. ` +
   `Unit types: legion/spear/pike (melee, pike beats cavalry), archer (ranged), cavalry (fast flankers), catapult (siege). ` +
   `legion and pike can enter a defensive stance (testudo/phalanx). ` +
-  `Reply with ONLY a JSON object, no prose:\n` +
+  `Reply with ONLY a single JSON object and nothing else — no reasoning, no markdown, no <think>:\n` +
   `{"orders":[{"unit":<id>,"x":<num>,"z":<num>,"stance":<0 or 1>}],"taunt":"<short line>"}\n` +
   `Order a unit to march to (x,z) to attack, flank, defend, or besiege. Omit stance unless changing it. Be decisive and tactical.`;
 
-// Pull the first JSON object out of the model's reply (tolerates code fences/prose).
+// Pull the orders object out of the reply. Tolerates reasoning models (gpt-oss,
+// deepseek) that emit <think>…</think> + prose + code fences: strip those, then
+// scan for balanced {…} blocks and return the first that parses with an orders array.
 export function parseOrders(text) {
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) return { orders: [], taunt: '' };
-  try {
-    const o = JSON.parse(m[0]);
-    return { orders: Array.isArray(o.orders) ? o.orders : [], taunt: String(o.taunt || '') };
-  } catch { return { orders: [], taunt: '' }; }
+  const clean = String(text)
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/```(?:json)?/gi, '');
+  for (let i = 0; i < clean.length; i++) {
+    if (clean[i] !== '{') continue;
+    let depth = 0;
+    for (let j = i; j < clean.length; j++) {
+      const c = clean[j];
+      if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) {
+        try {
+          const o = JSON.parse(clean.slice(i, j + 1));
+          if (Array.isArray(o.orders)) return { orders: o.orders, taunt: String(o.taunt || '') };
+        } catch { /* not this block */ }
+        break; // move past this '{' to the next candidate
+      }
+    }
+  }
+  return { orders: [], taunt: '' };
 }
 
 // Offline heuristic used by the `mock` provider: send every unit at the enemy centre.

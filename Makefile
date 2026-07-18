@@ -7,10 +7,12 @@ FORT ?= 0
 start: ## run the multiplayer battle server (http + websocket); FORT=1 adds a central castle
 	bun server.js --port $(PORT) --t0 $(T0) --t1 $(T1) --seed $(SEED) --fort $(FORT)
 
-AI0 ?= mock
-AI1 ?= mock
+# default matchup: Meta Llama 70B (Red) vs OpenAI GPT-OSS 120B (Blue), both on Groq.
+# override e.g. AI0=mock, or AI1=groq:qwen/qwen3.6-27b, or AI0=openai / pioneer.
+AI0 ?= groq:llama-3.3-70b-versatile
+AI1 ?= groq:openai/gpt-oss-120b
 AITURN ?= 4
-ai: ## LLM generals battle: AI0/AI1 = groq|openai|pioneer|mock (set *_API_KEY env); auto-starts
+ai: ## LLM generals battle: AI0/AI1 = provider[:model] (groq|openai|pioneer|mock); needs *_API_KEY; auto-starts
 	bun server.js --port $(PORT) --t0 $(T0) --t1 $(T1) --fort $(FORT) --ai0 $(AI0) --ai1 $(AI1) --aiturn $(AITURN) --autostart 1
 
 test: ## headless sim smoke test — asserts combat mechanics fire

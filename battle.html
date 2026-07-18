@@ -12,6 +12,12 @@
       background:rgba(10,14,20,.72);border:1px solid #333;border-radius:6px;padding:8px 10px;line-height:1.5}
     #mech h3{margin:0 0 4px;font-size:12px;color:#ffe066;letter-spacing:1px}
     #mech b{color:#fff}
+    #generals{position:fixed;top:8px;left:50%;transform:translateX(-50%);display:none;pointer-events:none;
+      font-size:13px;text-align:center;text-shadow:0 1px 2px #000;background:rgba(10,14,20,.72);border:1px solid #333;border-radius:6px;padding:6px 14px;max-width:70vw}
+    #generals .vs{color:#888;margin:0 8px}
+    #generals .t0{color:#e88}
+    #generals .t1{color:#8ae}
+    #generals .say{color:#ddd;font-style:italic;font-size:12px;margin-top:3px;min-height:1.2em}
     #ticker{position:fixed;bottom:10px;left:10px;color:#bbb;font-size:12px;pointer-events:none;text-shadow:0 1px 2px #000;line-height:1.5}
     #ticker .t0{color:#e88}
     #ticker .t1{color:#8ae}
@@ -37,6 +43,7 @@
 <body>
   <div id="hud"></div>
   <div id="mech"></div>
+  <div id="generals"></div>
   <div id="ticker"></div>
   <div id="marquee"></div>
   <div id="banner"></div>

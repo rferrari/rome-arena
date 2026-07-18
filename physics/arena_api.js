@@ -11,7 +11,7 @@
 // Views are re-derived if emscripten grows (and thus detaches) the heap.
 import { loadArena } from './arena_loader.js';
 
-export const XF_STRIDE = 8; // x,y,z, qx,qy,qz,qw, kind
+export const XF_STRIDE = 11; // x,y,z, qx,qy,qz,qw, kind, hx,hy,hz
 
 export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
   const { Module } = await loadArena();
@@ -32,6 +32,7 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     raycast: c('arena_raycast', 'number', ['number', 'number', 'number', 'number', 'number', 'number']),
     ragdoll: c('arena_ragdoll', null, ['number', 'number', 'number', 'number', 'number']),
     buildFort: c('arena_build_fort', 'number', ['number', 'number', 'number', 'number']),
+    sync: c('arena_sync', null, []),
   };
 
   let lastBuffer = null, xfView = null, intentView = null, contactView = null;
@@ -70,5 +71,7 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     ragdoll: (h, vx, vy, vz, spin = 3) => fn.ragdoll(h, vx, vy, vz, spin),
     // build a castle (walls/towers/keep) centered at (cx,cz); returns brick count.
     buildFort: (cx, cz, halfSize, courses = 5) => fn.buildFort(cx, cz, halfSize, courses),
+    // fill the transform buffer without stepping (e.g. show the fresh fort at lobby).
+    sync: () => fn.sync(),
   };
 }

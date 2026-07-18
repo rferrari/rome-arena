@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { createSim, TYPES, FIELD_W, FIELD_D, SPACING } from './sim.js';
 import { createArena } from './physics/arena_api.js';
+import { CONFIG } from './physics/config.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -101,6 +102,26 @@ function decodeSnapshot(buf) {
     });
     o += 7;
   }
+  // props (fort bricks + ragdoll corpses) — full 3D transforms, rendered from the
+  // latest snapshot without interpolation (they move fast when hit).
+  const nP = v.getUint16(o, true); o += 2;
+  const props = new Float32Array(nP * 11); // x,y,z, qx,qy,qz,qw, hx,hy,hz, kind
+  for (let i = 0; i < nP; i++) {
+    const p = i * 11;
+    props[p] = v.getInt16(o, true) / 100;
+    props[p + 1] = v.getInt16(o + 2, true) / 100;
+    props[p + 2] = v.getInt16(o + 4, true) / 100;
+    props[p + 3] = v.getInt16(o + 6, true) / 32767;
+    props[p + 4] = v.getInt16(o + 8, true) / 32767;
+    props[p + 5] = v.getInt16(o + 10, true) / 32767;
+    props[p + 6] = v.getInt16(o + 12, true) / 32767;
+    props[p + 7] = v.getUint8(o + 14) / 50;
+    props[p + 8] = v.getUint8(o + 15) / 50;
+    props[p + 9] = v.getUint8(o + 16) / 50;
+    props[p + 10] = v.getUint8(o + 17);
+    o += 18;
+  }
+  s.props = props; s.nProps = nP;
   snaps.push(s);
   if (snaps.length > 12) snaps.shift();
 }
@@ -159,7 +180,7 @@ let booting = false;
 async function startSolo() {
   if (booting || mode) return; // async WASM load leaves `mode` null; guard re-entry
   booting = true;
-  const arena = await createArena({ maxBodies: 8000 }); // browser-side box3d world for solo play
+  const arena = await createArena({ maxBodies: CONFIG.maxBodies }); // browser-side box3d world for solo play
   mode = 'solo';
   you = { team: 0, slot: -1 }; // -1 = owns all of team 0
   sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena, fort: location.hash.includes('fort') });
@@ -305,6 +326,62 @@ arrowMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 arrowMesh.frustumCulled = false;
 scene.add(arrowMesh);
 const flyingArrows = [];
+
+// ---------------- physics props: fort bricks + ragdoll corpses ----------------
+// One instanced mesh each, driven by full 3D transforms (pos+quat) from the sim
+// (solo: read the arena buffer directly; net: the decoded snapshot props).
+const brickMesh = new THREE.InstancedMesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshStandardMaterial({ color: 0x9a8f7c, roughness: 1 }),
+  CONFIG.render.brickCap
+);
+const ragdollGeo = new THREE.CapsuleGeometry(0.35, 0.65, 3, 6);
+ragdollGeo.translate(0, 0.725, 0); // match the physics capsule's body-local center
+const ragdollMesh = new THREE.InstancedMesh(
+  ragdollGeo, new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.9 }), CONFIG.render.ragdollCap
+);
+for (const m of [brickMesh, ragdollMesh]) {
+  m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  m.frustumCulled = false;
+  m.castShadow = false;
+  scene.add(m);
+}
+let lastBricks = 0, lastRags = 0;
+function updateProps() {
+  let nb = 0, nr = 0;
+  const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
+    dummy.position.set(x, y, z);
+    dummy.quaternion.set(qx, qy, qz, qw);
+    if (kind === 2) {
+      if (nb >= brickMesh.count) return;
+      dummy.scale.set(hx * 2, hy * 2, hz * 2);
+      dummy.updateMatrix(); brickMesh.setMatrixAt(nb++, dummy.matrix);
+    } else {
+      if (nr >= ragdollMesh.count) return;
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix(); ragdollMesh.setMatrixAt(nr++, dummy.matrix);
+    }
+  };
+  if (mode === 'solo' && sim) {
+    const xf = sim.arena.transforms, ST = sim.arena.XF_STRIDE, cnt = sim.arena.count;
+    for (let h = 0; h < cnt; h++) {
+      const b = h * ST, k = xf[b + 7];
+      if (k === 2 || k === 5) put(k, xf[b], xf[b + 1], xf[b + 2], xf[b + 3], xf[b + 4], xf[b + 5], xf[b + 6], xf[b + 8], xf[b + 9], xf[b + 10]);
+    }
+  } else if (mode === 'net') {
+    const s = snaps[snaps.length - 1];
+    if (s && s.props) {
+      const P = s.props;
+      for (let i = 0; i < s.nProps; i++) { const p = i * 11; put(P[p + 10], P[p], P[p + 1], P[p + 2], P[p + 3], P[p + 4], P[p + 5], P[p + 6], P[p + 7], P[p + 8], P[p + 9]); }
+    }
+  }
+  dummy.scale.setScalar(0); dummy.updateMatrix();
+  for (let i = nb; i < lastBricks; i++) brickMesh.setMatrixAt(i, dummy.matrix);
+  for (let i = nr; i < lastRags; i++) ragdollMesh.setMatrixAt(i, dummy.matrix);
+  lastBricks = nb; lastRags = nr;
+  brickMesh.instanceMatrix.needsUpdate = true;
+  ragdollMesh.instanceMatrix.needsUpdate = true;
+}
 
 const stonePool = [];
 const stoneGeo = new THREE.SphereGeometry(0.45, 8, 8);
@@ -726,6 +803,7 @@ function frame(now) {
   updateCamera(dt);
   if (mode) {
     updateInstances(dt);
+    updateProps();
     updateProjectiles(dt);
     updateParticles(dt);
     hudT -= dt;

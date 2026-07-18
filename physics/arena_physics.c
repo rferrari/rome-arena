@@ -35,14 +35,16 @@ enum { KIND_DEAD = 0, KIND_SOLDIER = 1, KIND_BRICK = 2, KIND_BOULDER = 3, KIND_S
 #define MASK_ALL    0xFFFFFFFFu
 #define PI_F 3.14159265358979323846f
 
-// floats per body in the transform buffer: x,y,z, qx,qy,qz,qw, flags
-#define XF_STRIDE 8
+// floats per body in the transform buffer: x,y,z, qx,qy,qz,qw, flags, hx,hy,hz
+// (half-extents let the renderer scale instanced bricks without a side table)
+#define XF_STRIDE 11
 
 static b3WorldId g_world;
 static b3BodyId* g_bodies = NULL;
 static unsigned char* g_kind = NULL;
 static float* g_xf = NULL;      // transform out buffer  (XF_STRIDE * cap)
 static float* g_intent = NULL;  // soldier intent buffer (2 * cap): desired vx,vz
+static float* g_ext = NULL;     // per-body half-extents (3 * cap) for rendering
 static int g_cap = 0;
 static int g_count = 0;
 
@@ -50,6 +52,8 @@ static int g_count = 0;
 #define MAX_CONTACTS 8192
 static int* g_contacts = NULL;
 static int g_contactCount = 0;
+
+static void write_transforms(void); // defined after arena_step
 
 // ---------------- Phase 1 smoke API (unchanged) ----------------
 static b3BodyId g_box;
@@ -105,7 +109,7 @@ void arena_reset(int seed, int maxBodies) {
   wd.enableSleep = true;
   g_world = b3CreateWorld(&wd);
 
-  free(g_bodies); free(g_kind); free(g_xf); free(g_intent); free(g_contacts);
+  free(g_bodies); free(g_kind); free(g_xf); free(g_intent); free(g_contacts); free(g_ext);
   g_cap = maxBodies;
   g_count = 0;
   g_contactCount = 0;
@@ -114,15 +118,19 @@ void arena_reset(int seed, int maxBodies) {
   g_xf = (float*) calloc(g_cap * XF_STRIDE, sizeof(float));
   g_intent = (float*) calloc(g_cap * 2, sizeof(float));
   g_contacts = (int*) calloc(MAX_CONTACTS * 2, sizeof(int));
+  g_ext = (float*) calloc(g_cap * 3, sizeof(float));
 }
 
-static int push_body(b3BodyId id, unsigned char kind) {
+// push a body and record its render half-extents in one go
+static int push_body_ext(b3BodyId id, unsigned char kind, float hx, float hy, float hz) {
   if (g_count >= g_cap) return -1;
   int h = g_count++;
   g_bodies[h] = id;
   g_kind[h] = kind;
+  g_ext[h * 3] = hx; g_ext[h * 3 + 1] = hy; g_ext[h * 3 + 2] = hz;
   return h;
 }
+static int push_body(b3BodyId id, unsigned char kind) { return push_body_ext(id, kind, 0, 0, 0); }
 
 // Static ground plane (top at y=0) plus a perimeter wall ring so bodies can't
 // leave the field. w,d are the full field width/depth (FIELD_W, FIELD_D).
@@ -180,7 +188,7 @@ int arena_add_soldier(float x, float z) {
   sd.filter.categoryBits = CAT_SOLDIER;
   sd.filter.maskBits = CAT_STATIC | CAT_SOLDIER | CAT_BOULDER | CAT_BRICK; // not ragdolls
   b3CreateCapsuleShape(id, &sd, &cap);
-  return push_body(id, KIND_SOLDIER);
+  return push_body_ext(id, KIND_SOLDIER, SOL_RADIUS, (SOL_HIGH - SOL_LOW) * 0.5f, SOL_RADIUS);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -197,7 +205,7 @@ int arena_add_brick(float x, float y, float z, float hx, float hy, float hz, int
   sd.filter.categoryBits = isDynamic ? CAT_BRICK : CAT_STATIC;
   sd.filter.maskBits = MASK_ALL;
   b3CreateHullShape(id, &sd, &hull.base);
-  return push_body(id, isDynamic ? KIND_BRICK : KIND_STATIC);
+  return push_body_ext(id, isDynamic ? KIND_BRICK : KIND_STATIC, hx, hy, hz);
 }
 
 // Fast dynamic rock (CCD bullet) launched with an initial velocity.
@@ -221,7 +229,7 @@ int arena_add_boulder(float x, float y, float z, float vx, float vy, float vz, f
   sd.enableContactEvents = true;
   b3CreateHullShape(id, &sd, rock);
   b3DestroyHull(rock);
-  return push_body(id, KIND_BOULDER);
+  return push_body_ext(id, KIND_BOULDER, radius, radius, radius);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -259,6 +267,13 @@ void arena_step(float dt, int subSteps) {
     g_contactCount++;
   }
 
+  write_transforms();
+}
+
+// Write every live body's transform (pos + quat), kind flag, and render
+// half-extents into the shared buffer. Split out so it can also run without a
+// physics step (arena_sync), e.g. to fill the buffer for the lobby / snapshot init.
+static void write_transforms(void) {
   for (int h = 0; h < g_count; h++) {
     float* o = g_xf + h * XF_STRIDE;
     if (g_kind[h] == KIND_DEAD) { o[7] = KIND_DEAD; continue; }
@@ -266,8 +281,12 @@ void arena_step(float dt, int subSteps) {
     o[0] = (float) t.p.x; o[1] = (float) t.p.y; o[2] = (float) t.p.z;
     o[3] = t.q.v.x; o[4] = t.q.v.y; o[5] = t.q.v.z; o[6] = t.q.s;
     o[7] = (float) g_kind[h];
+    o[8] = g_ext[h * 3]; o[9] = g_ext[h * 3 + 1]; o[10] = g_ext[h * 3 + 2];
   }
 }
+
+// Fill the transform buffer without advancing physics (fresh fort at lobby time).
+EMSCRIPTEN_KEEPALIVE void arena_sync(void) { write_transforms(); }
 
 // Contacts drained during the last arena_step: a flat (handleA, handleB) int
 // buffer of length 2*arena_contact_count(). JS maps handles -> game objects.
@@ -322,7 +341,7 @@ static int make_brick(float x, float y, float z, float hx, float hy, float hz, f
   sd.filter.categoryBits = CAT_BRICK;
   sd.filter.maskBits = MASK_ALL;
   b3CreateHullShape(id, &sd, &hull.base);
-  return push_body(id, KIND_BRICK);
+  return push_body_ext(id, KIND_BRICK, hx, hy, hz);
 }
 
 // Straight running-bond wall from (x0,z0) to (x1,z1). Bricks are sized to the span

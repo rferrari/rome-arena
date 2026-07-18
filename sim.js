@@ -2,6 +2,8 @@
 // and in the browser (solo fallback). Server-authoritative: clients only
 // send orders, so there is no lockstep desync class of bugs.
 
+import { CONFIG } from './physics/config.js';
+
 export const FIELD_W = 200, FIELD_D = 140;
 export const SPACING = 1.3;
 
@@ -37,7 +39,7 @@ function mulberry32(seed) {
   };
 }
 
-export const SUBSTEPS = 4; // box3d solver sub-steps per tick (open-field default)
+export const SUBSTEPS = CONFIG.subSteps; // box3d solver sub-steps per tick
 
 export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = {}) {
   if (!arena) throw new Error('createSim requires a physics arena (see physics/arena_api.js)');
@@ -59,7 +61,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     routs: 0, rallies: 0,
   };
   const sim = {
-    units, soldiers, stats, players, winner: null, time: 0,
+    units, soldiers, stats, players, winner: null, time: 0, arena,
     ai: new Set(), // 'team:slot' keys driven by the built-in AI
     step, order, toggleStance, adjustFiles,
     drainEvents: () => events.splice(0),
@@ -120,7 +122,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
 
   // optional central fortress to fight over / bombard (default off so open-field
   // test_sim is unaffected). Bricks are pure physics — no per-brick JS logic.
-  if (fort) sim.fortBricks = arena.buildFort(0, 0, 12, 5);
+  if (fort) {
+    const F = CONFIG.fort;
+    sim.fortBricks = arena.buildFort(F.center[0], F.center[1], F.halfSize, F.courses);
+    arena.sync(); // fill the transform buffer so the lobby/init shows the fresh fort
+  }
 
   // ---- spatial grid ----
   let grid = new Map();
@@ -294,7 +300,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     // writing intents into the shared buffer. box3d then integrates movement AND
     // resolves crowd separation / boundary in arena.step — no hand-rolled push-apart.
     for (const s of soldiers) {
-      if (s.state === 1) { s.deathT += dt; if (s.deathT > 4) { s.state = 2; if (s.h >= 0) { arena.remove(s.h); s.h = -1; } } continue; }
+      if (s.state === 1) { s.deathT += dt; if (s.deathT > CONFIG.ragdollLifetime) { s.state = 2; if (s.h >= 0) { arena.remove(s.h); s.h = -1; } } continue; }
       if (s.state !== 0) continue;
       const u = s.unit, T = u.type;
       s.fightT = Math.max(0, s.fightT - dt);

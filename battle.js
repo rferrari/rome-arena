@@ -448,6 +448,7 @@ function buildGLBArmy(need) {
           const mixer = new THREE.AnimationMixer(s);
           const act = (n) => { const c = THREE.AnimationClip.findByName(gltf.animations, n); return c ? mixer.clipAction(c) : null; };
           const actions = { idle: act('Idle'), walk: act('Walking_A'), death: act('Death_A') };
+          if (actions.death) { actions.death.setLoop(THREE.LoopOnce, 1); actions.death.clampWhenFinished = true; } // die once, hold the pose
           if (actions.idle) actions.idle.play();
           pool.push({ scene: s, mixer, actions, current: 'idle', prevX: 0, prevZ: 0 });
         }

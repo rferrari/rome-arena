@@ -28,7 +28,8 @@ uint32_t g_randomSeed = 12345u;
 #define SOL_DENSITY 1.0f
 
 // body kinds (also written into the transform buffer's flags slot)
-enum { KIND_DEAD = 0, KIND_SOLDIER = 1, KIND_BRICK = 2, KIND_BOULDER = 3, KIND_STATIC = 4, KIND_RAGDOLL = 5, KIND_RUBBLE = 6 };
+enum { KIND_DEAD = 0, KIND_SOLDIER = 1, KIND_BRICK = 2, KIND_BOULDER = 3, KIND_STATIC = 4, KIND_RAGDOLL = 5, KIND_RUBBLE = 6,
+       KIND_ENGINE = 7 /* trebuchet frame/arm */, KIND_RAM = 8 };
 
 // collision categories. Ragdolls (dead soldiers) collide only with the world/rubble
 // so corpses fall realistically without blocking the living battle.
@@ -60,6 +61,8 @@ static int g_contactCount = 0;
 
 static void write_transforms(void); // defined after arena_step
 static void do_breach(float x, float y, float z, float r); // boulder-blasts standing walls to rubble
+static void treb_step(void); // trebuchet arm state machines (defined with the engines)
+static int g_trebCount;     // live trebuchets (definition with the engine code)
 
 // ---- jointed ragdoll pool (real box3d Humans, spawned on death, capped) ----
 #define RAGDOLL_MAX 128
@@ -141,6 +144,7 @@ void arena_reset(int seed, int maxBodies) {
   // old world's ragdoll bodies are gone with it — just forget them
   for (int i = 0; i < RAGDOLL_MAX; i++) g_rag[i].isSpawned = false;
   g_ragNext = 0; g_ragTime = 0.0f; g_renderCount = 0;
+  g_trebCount = 0; // engines died with the old world too
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -236,11 +240,13 @@ void arena_create_ground(float w, float d) {
 
 // Upright dynamic capsule; rotation fully locked (facing is owned by JS), so it
 // stays standing and slides via velocity intents while still colliding/jostling.
+// y > 0 spawns the soldier elevated (e.g. garrison archers standing on wall crests —
+// they rest on the static bricks and tumble down with them when the wall is breached).
 EMSCRIPTEN_KEEPALIVE
-int arena_add_soldier(float x, float z) {
+int arena_add_soldier(float x, float y, float z) {
   b3BodyDef bd = b3DefaultBodyDef();
   bd.type = b3_dynamicBody;
-  bd.position = (b3Pos){ x, 0.0f, z };
+  bd.position = (b3Pos){ x, y, z };
   bd.motionLocks.angularX = true;
   bd.motionLocks.angularY = true;
   bd.motionLocks.angularZ = true;
@@ -322,6 +328,8 @@ void arena_step(float dt, int subSteps) {
     b3Body_SetLinearVelocity(g_bodies[h], (b3Vec3){ g_intent[h * 2], v.y, g_intent[h * 2 + 1] });
   }
 
+  treb_step(); // swing/release/reset the trebuchet arms
+
   b3World_Step(g_world, dt, subSteps);
 
   // drain begin-touch contacts into the shared int buffer as (handleA, handleB),
@@ -331,10 +339,31 @@ void arena_step(float dt, int subSteps) {
   for (int i = 0; i < ce.beginCount && g_contactCount < MAX_CONTACTS; i++) {
     int ha = (int)(intptr_t) b3Body_GetUserData(b3Shape_GetBody(ce.beginEvents[i].shapeIdA));
     int hb = (int)(intptr_t) b3Body_GetUserData(b3Shape_GetBody(ce.beginEvents[i].shapeIdB));
+    int ka = g_kind[ha], kb = g_kind[hb];
+    // battering ram: a fast ram slamming a wall brick breaches it (handled fully
+    // here in C — ram pairs are never reported to JS).
+    if (ka == KIND_RAM || kb == KIND_RAM) {
+      const int ram = ka == KIND_RAM ? ha : hb, oth = ka == KIND_RAM ? hb : ha;
+      if (g_kind[oth] == KIND_BRICK) {
+        b3Vec3 v = b3Body_GetLinearVelocity(g_bodies[ram]);
+        if (v.x * v.x + v.z * v.z > 2.25f) { // > 1.5 m/s: the blow lands
+          b3WorldTransform t = b3Body_GetTransform(g_bodies[oth]);
+          do_breach((float) t.p.x, (float) t.p.y, (float) t.p.z, 3.2f);
+        }
+      }
+      continue;
+    }
+    // flying rubble: only fast rubble-vs-soldier pairs matter (falling masonry
+    // CRUSHES soldiers); everything else rubble touches is noise — drop it.
+    if (ka == KIND_RUBBLE || kb == KIND_RUBBLE) {
+      int rub = ka == KIND_RUBBLE ? ha : hb, oth = ka == KIND_RUBBLE ? kb : ka;
+      if (oth != KIND_SOLDIER) continue;
+      b3Vec3 v = b3Body_GetLinearVelocity(g_bodies[rub]);
+      if (v.x * v.x + v.y * v.y + v.z * v.z < 16.0f) continue; // < 4 m/s: harmless
+    }
     g_contacts[g_contactCount * 2] = ha;
     g_contacts[g_contactCount * 2 + 1] = hb;
     g_contactCount++;
-    int ka = g_kind[ha], kb = g_kind[hb];
     if ((ka == KIND_BOULDER && kb == KIND_BRICK) || (ka == KIND_BRICK && kb == KIND_BOULDER)) {
       int brick = (ka == KIND_BRICK) ? ha : hb;
       b3WorldTransform t = b3Body_GetTransform(g_bodies[brick]);
@@ -404,6 +433,9 @@ static void do_breach(float x, float y, float z, float r) {
     const float d = sqrtf(dx * dx + dz * dz) + 0.01f;
     b3Body_ApplyLinearImpulseToCenter(g_bodies[h], (b3Vec3){ dx / d * 40.0f, 25.0f, dz / d * 40.0f }, true);
     g_kind[h] = KIND_RUBBLE;
+    // flying rubble reports contacts so it can crush soldiers (filtered in the drain)
+    b3ShapeId sh;
+    if (b3Body_GetShapes(g_bodies[h], &sh, 1) == 1) b3Shape_EnableContactEvents(sh, true);
   }
 }
 
@@ -411,6 +443,165 @@ static void do_breach(float x, float y, float z, float r) {
 // buffer of length 2*arena_contact_count(). JS maps handles -> game objects.
 EMSCRIPTEN_KEEPALIVE int arena_contact_count(void) { return g_contactCount; }
 EMSCRIPTEN_KEEPALIVE int* arena_contacts_ptr(void) { return g_contacts; }
+
+// ---- jointed siege engines ----
+// Trebuchet: a static frame post and a throwing arm on a REVOLUTE JOINT, swung by
+// the joint motor. The arm physically whips over the top; at the release angle a
+// boulder spawns at the arm tip (with the launch velocity JS computed). States:
+// 0 idle (held cocked) -> 1 firing (motor whips) -> 2 resetting (winch back).
+#define TREB_MAX 32
+typedef struct { b3BodyId arm; b3JointId joint; int state; float vx, vy, vz, radius; int spawned; } Treb;
+static Treb g_treb[TREB_MAX]; // g_trebCount declared with the top globals
+
+EMSCRIPTEN_KEEPALIVE
+int arena_add_trebuchet(float x, float z, float yaw) {
+  if (g_trebCount >= TREB_MAX) return -1;
+  const b3Quat yawQ = b3MakeQuatFromAxisAngle((b3Vec3){ 0, 1, 0 }, yaw);
+  b3ShapeDef sd = b3DefaultShapeDef();
+  sd.baseMaterial.friction = 0.6f;
+  sd.filter.categoryBits = CAT_STATIC;
+  sd.filter.maskBits = MASK_ALL & ~CAT_RAGDOLL;
+
+  // frame post (static), pivot at its top (y = 3.2)
+  b3BodyDef pd = b3DefaultBodyDef();
+  pd.type = b3_staticBody;
+  pd.position = (b3Pos){ x, 1.6f, z };
+  pd.rotation = yawQ;
+  pd.userData = (void*)(intptr_t) g_count;
+  b3BodyId post = b3CreateBody(g_world, &pd);
+  b3BoxHull ph = b3MakeBoxHull(0.35f, 1.6f, 0.35f);
+  b3CreateHullShape(post, &sd, &ph.base);
+  push_body_ext(post, KIND_ENGINE, 0.35f, 1.6f, 0.35f);
+
+  // throwing arm (dynamic), long axis = local Z, pivoted 1.1 from its butt end,
+  // created cocked (tip low behind the frame)
+  const float REST = 2.4f;
+  const b3Quat armQ = b3MulQuat(yawQ, b3MakeQuatFromAxisAngle((b3Vec3){ 1, 0, 0 }, REST));
+  const b3Vec3 off = b3RotateVector(armQ, (b3Vec3){ 0, 0, 1.1f });
+  b3BodyDef ad = b3DefaultBodyDef();
+  ad.type = b3_dynamicBody;
+  ad.position = (b3Pos){ x + off.x, 3.2f + off.y, z + off.z };
+  ad.rotation = armQ;
+  ad.userData = (void*)(intptr_t) g_count;
+  b3BodyId arm = b3CreateBody(g_world, &ad);
+  b3BoxHull ah = b3MakeBoxHull(0.15f, 0.15f, 2.2f);
+  b3ShapeDef asd = b3DefaultShapeDef();
+  asd.density = 2.0f;
+  asd.filter.categoryBits = CAT_STATIC; // arm shouldn't shove the crew around
+  asd.filter.maskBits = 0;              // ...or collide at all; the joint drives it
+  b3CreateHullShape(arm, &asd, &ah.base);
+  push_body_ext(arm, KIND_ENGINE, 0.15f, 0.15f, 2.2f);
+
+  // hinge: rotates about the joint frame z-axis; rotY(90°) maps z onto local X,
+  // the horizontal axis perpendicular to the throw direction
+  const b3Quat qF = b3MakeQuatFromAxisAngle((b3Vec3){ 0, 1, 0 }, 0.5f * PI_F);
+  b3RevoluteJointDef jd = b3DefaultRevoluteJointDef();
+  jd.base.bodyIdA = post;
+  jd.base.bodyIdB = arm;
+  jd.base.localFrameA = (b3Transform){ { 0, 1.6f, 0 }, qF };
+  jd.base.localFrameB = (b3Transform){ { 0, 0, -1.1f }, qF };
+  jd.enableLimit = true;
+  jd.lowerAngle = -3.05f;
+  jd.upperAngle = 0.05f;
+  jd.enableMotor = true;
+  jd.maxMotorTorque = 30000.0f;
+  jd.motorSpeed = 0.0f;
+  b3JointId joint = b3CreateRevoluteJoint(g_world, &jd);
+
+  Treb* t = &g_treb[g_trebCount];
+  t->arm = arm; t->joint = joint; t->state = 0; t->spawned = -1;
+  return g_trebCount++;
+}
+
+// Kick off a throw; the boulder (radius r, launch velocity v) releases mid-swing.
+EMSCRIPTEN_KEEPALIVE
+void arena_trebuchet_fire(int i, float vx, float vy, float vz, float radius) {
+  if (i < 0 || i >= g_trebCount || g_treb[i].state != 0) return;
+  Treb* t = &g_treb[i];
+  t->vx = vx; t->vy = vy; t->vz = vz; t->radius = radius;
+  t->state = 1;
+  b3RevoluteJoint_SetMotorSpeed(t->joint, -10.0f);
+}
+
+// Returns the boulder handle spawned by trebuchet i since the last poll (else -1).
+EMSCRIPTEN_KEEPALIVE
+int arena_trebuchet_poll(int i) {
+  if (i < 0 || i >= g_trebCount) return -1;
+  int h = g_treb[i].spawned;
+  g_treb[i].spawned = -1;
+  return h;
+}
+
+static void treb_step(void) {
+  for (int i = 0; i < g_trebCount; i++) {
+    Treb* t = &g_treb[i];
+    if (t->state == 0) continue;
+    const float a = b3RevoluteJoint_GetAngle(t->joint);
+    if (t->state == 1 && a < -2.2f) { // release point: spawn the boulder at the arm tip
+      b3WorldTransform w = b3Body_GetTransform(t->arm);
+      b3Vec3 tip = b3RotateVector(w.q, (b3Vec3){ 0, 0, 2.2f });
+      t->spawned = arena_add_boulder((float) w.p.x + tip.x, (float) w.p.y + tip.y + 0.5f,
+                                     (float) w.p.z + tip.z, t->vx, t->vy, t->vz, t->radius);
+      t->state = 2;
+      b3RevoluteJoint_SetMotorSpeed(t->joint, 2.5f); // winch the arm back
+    } else if (t->state == 2 && a > -0.05f) {
+      t->state = 0;
+      b3RevoluteJoint_SetMotorSpeed(t->joint, 0.0f); // hold cocked
+    }
+  }
+}
+
+// Battering ram: a very heavy sled that the crew drives into the gate; wall bricks
+// it slams into are breached (handled in the contact drain).
+EMSCRIPTEN_KEEPALIVE
+int arena_add_ram(float x, float z) {
+  b3BodyDef bd = b3DefaultBodyDef();
+  bd.type = b3_dynamicBody;
+  bd.position = (b3Pos){ x, 0.8f, z };
+  bd.motionLocks.angularX = true;
+  bd.motionLocks.angularY = true;
+  bd.motionLocks.angularZ = true;
+  bd.linearDamping = 0.5f;
+  bd.userData = (void*)(intptr_t) g_count;
+  b3BodyId id = b3CreateBody(g_world, &bd);
+  b3BoxHull hull = b3MakeBoxHull(0.8f, 0.7f, 2.6f);
+  b3ShapeDef sd = b3DefaultShapeDef();
+  sd.density = 25.0f;
+  sd.baseMaterial.friction = 0.3f;
+  sd.filter.categoryBits = CAT_BOULDER; // heavy siege class: hits soldiers, bricks, statics
+  sd.filter.maskBits = CAT_STATIC | CAT_SOLDIER | CAT_BRICK | CAT_BOULDER;
+  sd.enableContactEvents = true;
+  b3CreateHullShape(id, &sd, &hull.base);
+  return push_body_ext(id, KIND_RAM, 0.8f, 0.7f, 2.6f);
+}
+
+// Drive any dynamic body horizontally (the ram crew pushing); vertical is preserved.
+EMSCRIPTEN_KEEPALIVE
+void arena_set_velocity(int h, float vx, float vz) {
+  if (h < 0 || h >= g_count || g_kind[h] == KIND_DEAD) return;
+  b3Vec3 v = b3Body_GetLinearVelocity(g_bodies[h]);
+  b3Body_SetLinearVelocity(g_bodies[h], (b3Vec3){ vx, v.y, vz });
+}
+
+// Radial-impulse explosion (fire pots): physically blasts soldiers, rubble, and
+// corpses outward. Gameplay damage is applied by JS; this is the physics kick.
+EMSCRIPTEN_KEEPALIVE
+void arena_explode(float x, float y, float z, float radius, float impulsePerArea) {
+  b3ExplosionDef ed = b3DefaultExplosionDef();
+  ed.position = (b3Pos){ x, y, z };
+  ed.radius = radius;
+  ed.falloff = radius * 0.6f;
+  ed.impulsePerArea = impulsePerArea;
+  ed.maskBits = CAT_SOLDIER | CAT_BRICK | CAT_BOULDER | CAT_RAGDOLL;
+  b3World_Explode(g_world, &ed);
+}
+
+// Impulse on one body (cavalry charge impact knocking a soldier flying).
+EMSCRIPTEN_KEEPALIVE
+void arena_impulse(int h, float ix, float iy, float iz) {
+  if (h < 0 || h >= g_count || g_kind[h] == KIND_DEAD) return;
+  b3Body_ApplyLinearImpulseToCenter(g_bodies[h], (b3Vec3){ ix, iy, iz }, true);
+}
 
 // Closest-hit ray cast; returns the hit body's handle, or -1 on miss. Used for
 // arrow impacts (a vertical ray at the landing column picks the soldier hit, and
@@ -477,6 +668,39 @@ static void build_tower(float cx, float cz, float radius, int sides, int courses
       make_brick(cx + cosf(th) * radius, y, cz + sinf(th) * radius, chord, 0.5f, 0.7f, th + 0.5f * PI_F);
     }
   }
+}
+
+// Exported wall/round-building primitives so JS can compose whole medieval city
+// layouts (grid districts, radial onion rings) without new C per layout.
+EMSCRIPTEN_KEEPALIVE
+int arena_build_wall(float x0, float z0, float x1, float z1, int courses, float thick) {
+  int before = g_count;
+  build_wall(x0, z0, x1, z1, courses, thick);
+  return g_count - before;
+}
+
+// Round building/keep/curtain. gateYaw (atan2(dz,dx) convention) opens a doorway
+// facing that direction when hasGate != 0; -makes onion curtains enterable.
+EMSCRIPTEN_KEEPALIVE
+int arena_build_rondel(float cx, float cz, float radius, int sides, int courses, float gateYaw, int hasGate) {
+  int before = g_count;
+  float chord = radius * sinf(PI_F / sides) - 0.06f;
+  if (chord < 0.05f) chord = 0.05f;
+  const float gateHalf = (PI_F / sides) * 1.7f; // skip ~2 segments per course at the gate
+  for (int c = 0; c < courses; c++) {
+    float y = 0.5f + c * 1.0f, rot0 = (c & 1) ? PI_F / sides : 0.0f;
+    for (int k = 0; k < sides; k++) {
+      float th = rot0 + (k + 0.5f) * (2.0f * PI_F / sides);
+      if (hasGate) {
+        float dth = th - gateYaw;
+        while (dth > PI_F) dth -= 2.0f * PI_F;
+        while (dth < -PI_F) dth += 2.0f * PI_F;
+        if (dth > -gateHalf && dth < gateHalf) continue;
+      }
+      make_brick(cx + cosf(th) * radius, y, cz + sinf(th) * radius, chord, 0.5f, 0.7f, th + 0.5f * PI_F);
+    }
+  }
+  return g_count - before;
 }
 
 // A square castle centered at (cx,cz): curtain walls with a gate gap, four corner

@@ -15,6 +15,9 @@ stress: ## max-scale stress test: ultra tier + castles
 ctf: ## capture-the-flag: small squads race to steal the enemy flag
 	bun server.js --port $(PORT) --tier $(TIER) --ctf 1 --seed $(SEED)
 
+dom: ## domination: hold 3 zones to bleed enemy tickets (combine with FORT=1)
+	bun server.js --port $(PORT) --tier $(TIER) --dom 1 --fort $(FORT) --seed $(SEED)
+
 test: ## headless sim smoke test — asserts combat mechanics fire
 	bun test_sim.js
 
@@ -33,4 +36,4 @@ wasm-fort: ## build a castle and bombard it; assert masonry is stable then caves
 help:
 	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/'
 
-.PHONY: start stress ctf test wasm wasm-test wasm-bench wasm-fort help
+.PHONY: start stress ctf dom test wasm wasm-test wasm-bench wasm-fort help

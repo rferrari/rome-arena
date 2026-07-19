@@ -42,7 +42,7 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     towerDrive: c('arena_tower_drive', null, ['number', 'number', 'number']),
     towerDrop: c('arena_tower_drop', null, ['number']),
     breach: c('arena_breach', null, ['number', 'number', 'number', 'number']),
-    spawnRagdoll: c('arena_spawn_ragdoll', null, ['number', 'number', 'number', 'number', 'number', 'number']),
+    spawnRagdoll: c('arena_spawn_ragdoll', null, ['number', 'number', 'number', 'number', 'number', 'number', 'number']),
     setRagdollParams: c('arena_set_ragdoll_params', null, ['number', 'number']),
     renderCount: c('arena_render_count', 'number', []),
     buildFort: c('arena_build_fort', 'number', ['number', 'number', 'number', 'number', 'number']),
@@ -104,8 +104,9 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     towerDrop: (i) => fn.towerDrop(i),
     // open a wall breach at a world point (siege-tower assault)
     breach: (x, y, z, r) => fn.breach(x, y, z, r),
-    // spawn a jointed ragdoll (pooled/capped) at (x,y,z) flung at (vx,vy,vz).
-    spawnRagdoll: (x, y, z, vx, vy, vz) => fn.spawnRagdoll(x, y, z, vx, vy, vz),
+    // spawn a jointed ragdoll (pooled/capped) at (x,y,z) flung at (vx,vy,vz) with an
+    // angular impulse `spin` (small for a melee poke, large for a boulder/explosion).
+    spawnRagdoll: (x, y, z, vx, vy, vz, spin = 4) => fn.spawnRagdoll(x, y, z, vx, vy, vz, spin),
     setRagdollParams: (cap, life) => fn.setRagdollParams(cap, life),
     // build a castle centered at (cx,cz); gateDir picks the gate's z-side (-1/+1).
     buildFort: (cx, cz, halfSize, courses = 5, gateDir = -1) => fn.buildFort(cx, cz, halfSize, courses, gateDir),

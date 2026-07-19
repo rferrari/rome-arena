@@ -11,10 +11,9 @@ export const CONFIG = {
   ragdolls: { cap: 48, lifetime: 5 },  // real jointed ragdolls on death (14 bodies each), pooled
   heroesPerTeam: 1,     // animated GLB champion models per team (rest instanced humanoids)
 
-  // fort (siege): each team fields a walled city. BOTH attack by default (mutual
-  // siege race — no predetermined loser); armies split into assault + home guard,
-  // and assaults STAGE at a standoff ring until artillery opens a breach.
-  fort: { halfSize: 8, courses: 5, backZ: 60, navCell: 2, stance: ['attack', 'attack'] },
+  // fort (siege): ONE walled city occupies the DEFENDER's side; the other team is the
+  // ATTACKER and must breach in. `defender` picks which team holds the city (0 or 1).
+  fort: { halfSize: 8, courses: 5, backZ: 60, navCell: 2, defender: 1 },
 
   // client render knobs (sent to clients in `init` so they match the server tier)
   render: {

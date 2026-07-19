@@ -186,9 +186,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
   let lastKill = 0;                           // sim.time of the last death (stalemate detection)
   if (fort) {
     const F = CONFIG.fort;
-    teamStance = F.stance;
+    // ONE walled city occupying the DEFENDER's whole side; the ATTACKER breaches in.
+    const DEF = F.defender ?? 1, ATT = 1 - DEF;
+    teamStance = []; teamStance[DEF] = 'defend'; teamStance[ATT] = 'attack';
     teamForts = [[], []];
-    // a square house: 4 walls with door gaps at the corners (static, cheap)
+    // a square house: 4 walls with door gaps at the corners (static physics props)
     const house = (cx, cz, hw = 3) => {
       const g = 0.7, hc = 3;
       arena.buildWall(cx - hw + g, cz - hw, cx + hw - g, cz - hw, hc);
@@ -196,80 +198,50 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
       arena.buildWall(cx - hw, cz - hw + g, cx - hw, cz + hw - g, hc);
       arena.buildWall(cx + hw, cz - hw + g, cx + hw, cz + hw - g, hc);
     };
-    for (let t = 0; t < 2; t++) {
-      const dir = t === 0 ? 1 : -1, facing = t === 0 ? Math.PI : 0;
-      // forward watchtowers near the CENTRE (both cities) — a SINGLE round tower each
-      // (not a full fort), pulled ~30% back toward each team's own side. They're
-      // lookout/garrison points, not gated objectives, so they're `tower:true` and the
-      // flow field routes AROUND them rather than trying to enter them.
-      for (const tx of [-50, 50]) {
-        arena.buildRondel(tx, dir * 42, 4, 10, F.courses + 2); // one solid round tower
-        teamForts[t].push({ cx: tx, cz: dir * 42, hs: 4, courses: F.courses + 2, tower: true });
-      }
-      if (t === 0) {
-        // RED — walled GRID city (Roman castrum): a curtain wall with one front gate,
-        // WIDE straight streets of well-spaced house blocks, and the king castle at
-        // the back-centre (the assault objective; its gate faces the enemy).
-        arena.buildFort(0, 105, 14, F.courses + 3, -1);
-        teamForts[t].push({ cx: 0, cz: 105, hs: 14, courses: F.courses + 3, gate: -1 });
-        const cw = 5, rf = 80, rb = 131;                          // tall city curtain: front z, back z
-        arena.buildWall(-92, rf, -9, rf, cw); arena.buildWall(9, rf, 92, rf, cw);   // front + central gate gap
-        arena.buildWall(-92, rf, -92, rb, cw); arena.buildWall(92, rf, 92, rb, cw); // side walls
-        // manned gatehouse: archers on the front wall either side of the gate
-        for (const gx of [-30, 30]) makeUnit(t, 0, 'archer', gx, rf, facing, 4, { y: cw + 0.15, garrison: true });
-        // house grid on wide streets (clear of the central avenue and the castle)
-        for (const hx of [-82, -55, -28, 28, 55, 82]) for (const hz of [88, 120]) house(hx, hz, 4);
-      } else {
-        // BLUE — concentric ONION city: a central keep, a gated curtain (the objective),
-        // and an OUTER ring wall whose gate lines up so attackers must pass through both
-        // (an onion of walls), with well-spaced round houses in the ring between them.
-        const bz = -105;
-        arena.buildRondel(0, bz, 6, 12, F.courses + 3);                                   // keep
-        arena.buildRondel(0, bz, 17, 30, F.courses, Math.PI / 2, true);                   // curtain (objective), gate +z
-        teamForts[t].push({ cx: 0, cz: bz, hs: 17, courses: F.courses, gate: 1 });
-        const orc = Math.max(3, F.courses - 2);
-        arena.buildRondel(0, bz, 33, 40, orc, Math.PI / 2, true);  // outer ring, gate +z
-        // archers manning the outer ring's front, either side of its gate
-        for (const gx of [-16, 16]) makeUnit(t, 0, 'archer', gx, bz + 30, facing, 4, { y: orc + 0.15, garrison: true });
-        for (let k = 0; k < 8; k++) {                            // ring of houses between curtain & outer wall
-          const a = (k + 0.5) * (Math.PI / 4);
-          if (Math.sin(a) > 0.6) continue;                       // leave the +z gate lane clear
-          arena.buildRondel(Math.cos(a) * 25, bz + Math.sin(a) * 25, 3, 7, 2);
-        }
-      }
-      // battlement garrisons: on the tower tops (centre) and on each castle's rear crest
-      for (const f of teamForts[t]) {
-        const nArch = f.hs >= 10 ? 6 : 3;
-        const gz = f.tower ? f.cz : f.cz + dir * f.hs; // towers: stand on top; castles: rear wall
-        makeUnit(t, 0, 'archer', f.cx, gz, facing, nArch, { y: f.courses + 0.15, garrison: true });
-      }
+    const dir = DEF === 0 ? 1 : -1, facing = DEF === 0 ? Math.PI : 0; // dir points into the DEF side
+    const cw = F.courses, halfW = 150, wallZ = dir * 22, backZ = dir * 148; // curtain front / city back
+    // front curtain with a central gate, side walls, back wall — a full enclosure
+    arena.buildWall(-halfW, wallZ, -13, wallZ, cw); arena.buildWall(13, wallZ, halfW, wallZ, cw);
+    arena.buildWall(-halfW, wallZ, -halfW, backZ, cw); arena.buildWall(halfW, wallZ, halfW, backZ, cw);
+    arena.buildWall(-halfW, backZ, halfW, backZ, cw);
+    // corner towers + two small watchtowers flanking the gate (garrison models on top)
+    for (const [tx, tz] of [[-halfW, wallZ], [halfW, wallZ], [-halfW, backZ], [halfW, backZ], [-46, wallZ], [46, wallZ]]) {
+      arena.buildRondel(tx, tz, 4.5, 10, cw + 2);
+      teamForts[DEF].push({ cx: tx, cz: tz, hs: 4.5, courses: cw + 2, tower: true });
     }
-    // jointed siege engines: two motor-swung trebuchets per team, plus one wheeled
-    // siege tower per team that rolls up to a solid wall section and drops its drawbridge.
+    // central CASTLE/KEEP — the big destructible structure, gate facing the attacker
+    const keepZ = dir * 96;
+    arena.buildFort(0, keepZ, 15, cw + 4, -dir);
+    teamForts[DEF].push({ cx: 0, cz: keepZ, hs: 15, courses: cw + 4, gate: -dir });
+    // houses through the city (more masonry for the physics to chew on) — kept on the
+    // flanks + behind the keep so nothing spawns inside the defenders' muster zone
+    for (const hx of [-125, 125]) for (const hz of [45, 75, 105, 135]) house(hx, dir * hz, 4);
+    for (const hx of [-40, 40]) house(hx, dir * 132, 4);
+    // garrisons: a line manning the front curtain + the tower tops + the keep crest
+    for (const gx of [-95, -60, 60, 95]) makeUnit(DEF, 0, 'archer', gx, wallZ, facing, 4, { y: cw + 0.15, garrison: true });
+    for (const f of teamForts[DEF]) {
+      const nArch = f.hs >= 10 ? 6 : 3;
+      const gz = f.tower ? f.cz : f.cz + dir * f.hs; // towers: stand on top; keep: rear crest
+      makeUnit(DEF, 0, 'archer', f.cx, gz, facing, nArch, { y: f.courses + 0.15, garrison: true });
+    }
+    // jointed siege engines — only the ATTACKER besieges (trebuchet line + a siege tower)
     engines = { trebs: [], towers: [] };
-    for (let t = 0; t < 2; t++) {
-      const dir = t === 0 ? 1 : -1, yaw = t === 0 ? Math.PI : 0;
-      for (const tx of [-38, 38])
-        engines.trebs.push({ id: arena.addTrebuchet(tx, dir * 86, yaw), team: t, x: tx, z: dir * 86, cd: 3 + rng() * 5 });
-      // aim the tower at a SOLID curtain section (offset from the gate) of the nearest
-      // enemy castle, so its drawbridge opens a fresh breach rather than the gate.
-      // Spawn OUTSIDE our own walls (z=63), clear of the deployment rows.
-      const id = arena.addTower(-22, dir * 63, yaw);
-      engines.towers.push({ id, h: arena.towerHandle(id), team: t, dropped: false });
-    }
+    const adir = ATT === 0 ? 1 : -1, ayaw = ATT === 0 ? Math.PI : 0;
+    for (const tx of [-60, 0, 60])
+      engines.trebs.push({ id: arena.addTrebuchet(tx, adir * 100, ayaw), team: ATT, x: tx, z: adir * 100, cd: 3 + rng() * 5 });
+    const id = arena.addTower(0, adir * 70, ayaw);
+    engines.towers.push({ id, h: arena.towerHandle(id), team: ATT, dropped: false });
+
     arena.sync();
     nav = [createFlowField(FIELD_W, FIELD_D, F.navCell), createFlowField(FIELD_W, FIELD_D, F.navCell)];
     sim.teamForts = teamForts;
     recomputeNav();
 
-    // Battle plan: each team splits into ASSAULT columns and a HOME GUARD (every 3rd
-    // column holds the line in front of its own city). Assaults advance to a staging
-    // ring outside the enemy capital and HOLD while artillery breaches the walls —
-    // then storm. No more suicide rush into an intact gate choke.
+    // Attacker splits into assault + a small reserve guard; defenders all hold the city.
     caps = [teamForts[0].find((f) => !f.tower), teamForts[1].find((f) => !f.tower)];
     for (const u of units) {
-      if (u.garrison || u.typeKey === 'catapult') continue;
-      if (u.slot % 3 === 2) { u.role = 'guard'; u.homeX = u.ax; u.homeZ = u.az; }
+      if (u.garrison || u.typeKey === 'catapult' || u.team !== ATT) continue;
+      if (u.slot % 4 === 3) { u.role = 'guard'; u.homeX = u.ax; u.homeZ = u.az; }
     }
   }
 
@@ -351,9 +323,9 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         .filter((f) => !f.tower)
         .map((f) => ({ x: f.cx, z: f.cz - (f.cz >= 0 ? 1 : -1) * (f.hs - 2) }));
       nav[t].compute(goals);
-      // storm trigger: enough rubble blasted near the enemy capital (a usable breach),
-      // or the siege has dragged on — sound the assault
-      if (caps && assault[t] === 'stage') {
+      // storm trigger (attacker only): enough rubble blasted near the enemy capital
+      // (a usable breach), or the siege has dragged on — sound the assault
+      if (caps && caps[1 - t] && assault[t] === 'stage') {
         const cap = caps[1 - t], r2 = (cap.hs + 10) ** 2;
         let rub = 0;
         for (let h = 0; h < n; h++) {

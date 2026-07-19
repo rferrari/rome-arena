@@ -5,7 +5,7 @@
 import { CONFIG } from './physics/config.js';
 import { createFlowField } from './physics/flowfield.js';
 
-export const FIELD_W = 200, FIELD_D = 140;
+export const FIELD_W = 300, FIELD_D = 200; // big field: wide flanks + deep approach
 export const SPACING = 1.3;
 
 export const TYPES = {
@@ -115,7 +115,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
 
   // ---- capture the flag: small squads + a flag at each team's base ----
   let flags = null, scores = null;
-  const CTF = { pick: 2.6, cap: 4.0, target: 3, baseZ: 60, returnT: 15 };
+  const CTF = { pick: 2.6, cap: 4.0, target: 3, baseZ: 86, returnT: 15 };
   if (ctf) {
     // small readable squads: fast cavalry runners + a legion escort per player slot
     const COMP_CTF = [['cavalry', 8], ['legion', 12]];
@@ -125,7 +125,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
       for (let p = 0; p < players[team]; p++) {
         const bx = (p + 0.5 - players[team] / 2) * blockW;
         COMP_CTF.forEach(([t, cnt], i) =>
-          makeUnit(team, p, t, bx + (i - (COMP_CTF.length - 1) / 2) * 8, dir * 44, facing, cnt));
+          makeUnit(team, p, t, bx + (i - (COMP_CTF.length - 1) / 2) * 8, dir * 63, facing, cnt));
         sim.ai.add(`${team}:${p}`);
       }
     }
@@ -139,7 +139,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
   // deployment: per player slot, 4 melee units front, archer+cavalry behind, catapult
   // rear. In fort mode armies form up further forward so each team's castle sits
   // behind them at ±backZ.
-  const zM = fort ? 26 : 42, zB = fort ? 34 : 52, zC = fort ? 42 : 60;
+  const zM = fort ? 38 : 60, zB = fort ? 49 : 74, zC = fort ? 60 : 86; // scaled for the deep field
   const nCat = fort ? 3 : 1; // a battery of catapults in siege mode
   for (let team = 0; team < 2; team++) {
     const dir = team === 0 ? 1 : -1, facing = team === 0 ? Math.PI : 0;
@@ -179,34 +179,49 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     const F = CONFIG.fort;
     teamStance = F.stance;
     teamForts = [[], []];
+    // a square house: 4 short walls with door gaps at the corners (static, cheap)
+    const house = (cx, cz, hw = 3) => {
+      const g = 0.7, hc = 2;
+      arena.buildWall(cx - hw + g, cz - hw, cx + hw - g, cz - hw, hc);
+      arena.buildWall(cx - hw + g, cz + hw, cx + hw - g, cz + hw, hc);
+      arena.buildWall(cx - hw, cz - hw + g, cx - hw, cz + hw - g, hc);
+      arena.buildWall(cx + hw, cz - hw + g, cx + hw, cz + hw - g, hc);
+    };
     for (let t = 0; t < 2; t++) {
       const dir = t === 0 ? 1 : -1, facing = t === 0 ? Math.PI : 0;
       // forward watchtowers near the CENTRE (both cities) — a SINGLE round tower each
       // (not a full fort), pulled ~30% back toward each team's own side. They're
       // lookout/garrison points, not gated objectives, so they're `tower:true` and the
       // flow field routes AROUND them rather than trying to enter them.
-      for (const tx of [-30, 30]) {
-        arena.buildRondel(tx, dir * 24, 3.5, 10, F.courses + 2); // one solid round tower
-        teamForts[t].push({ cx: tx, cz: dir * 24, hs: 3.5, courses: F.courses + 2, tower: true });
+      for (const tx of [-40, 40]) {
+        arena.buildRondel(tx, dir * 34, 3.5, 10, F.courses + 2); // one solid round tower
+        teamForts[t].push({ cx: tx, cz: dir * 34, hs: 3.5, courses: F.courses + 2, tower: true });
       }
       if (t === 0) {
-        // RED grid city — the king castle is the assault objective (gate faces enemy)
-        arena.buildFort(0, 56, 10, F.courses + 3, -1);
-        teamForts[t].push({ cx: 0, cz: 56, hs: 10, courses: F.courses + 3, gate: -1 });
-        const hw = 3, g = 0.6, hc = 2; // square houses with door-gap corners
-        for (const hx of [-40, -26, 26, 40]) for (const hz of [48, 62]) {
-          arena.buildWall(hx - hw + g, hz - hw, hx + hw - g, hz - hw, hc);
-          arena.buildWall(hx - hw + g, hz + hw, hx + hw - g, hz + hw, hc);
-          arena.buildWall(hx - hw, hz - hw + g, hx - hw, hz + hw - g, hc);
-          arena.buildWall(hx + hw, hz - hw + g, hx + hw, hz + hw - g, hc);
-        }
+        // RED — walled GRID city (Roman castrum): a curtain wall with one front gate,
+        // straight streets of house blocks, and the king castle at the back-centre
+        // (the assault objective; its gate faces the enemy).
+        arena.buildFort(0, 84, 11, F.courses + 3, -1);
+        teamForts[t].push({ cx: 0, cz: 84, hs: 11, courses: F.courses + 3, gate: -1 });
+        const cw = 2, rf = 64, rb = 100;                         // city curtain: front z, back z
+        arena.buildWall(-74, rf, -7, rf, cw); arena.buildWall(7, rf, 74, rf, cw);   // front + central gate gap
+        arena.buildWall(-74, rf, -74, rb, cw); arena.buildWall(74, rf, 74, rb, cw); // side walls
+        // house grid on straight streets (skip the central street x∈[-7,7] and the castle)
+        for (const hx of [-62, -44, -26, 26, 44, 62]) for (const hz of [72, 92]) house(hx, hz);
       } else {
-        // BLUE radial onion city — the gated curtain is the assault objective
-        arena.buildRondel(0, -54, 4.5, 12, F.courses + 3);                                  // round keep
-        arena.buildRondel(0, -54, 13, 22, Math.max(3, F.courses - 1), Math.PI / 2, true);   // curtain, gate to enemy
-        teamForts[t].push({ cx: 0, cz: -54, hs: 13, courses: Math.max(3, F.courses - 1), gate: 1 });
-        for (const [hx, hz] of [[-19, -46], [19, -46], [-22, -58], [22, -58], [-10, -66], [10, -66]])
-          arena.buildRondel(hx, hz, 2.2, 7, 2); // round houses ringing the curtain
+        // BLUE — concentric ONION city: a central keep, a gated curtain (the objective),
+        // and an OUTER ring wall whose gate lines up so attackers must pass through both
+        // (an onion of walls), with round houses filling the ring between them.
+        const bz = -84;
+        arena.buildRondel(0, bz, 5, 12, F.courses + 3);                                   // keep
+        arena.buildRondel(0, bz, 14, 26, F.courses, Math.PI / 2, true);                   // curtain (objective), gate +z
+        teamForts[t].push({ cx: 0, cz: bz, hs: 14, courses: F.courses, gate: 1 });
+        arena.buildRondel(0, bz, 28, 36, Math.max(2, F.courses - 2), Math.PI / 2, true);  // outer ring, gate +z
+        for (let k = 0; k < 8; k++) {                            // ring of houses between curtain & outer wall
+          const a = (k + 0.5) * (Math.PI / 4);
+          if (Math.sin(a) > 0.6) continue;                       // leave the +z gate lane clear
+          arena.buildRondel(Math.cos(a) * 21, bz + Math.sin(a) * 21, 2.4, 7, 2);
+        }
       }
       // battlement garrisons: on the tower tops (centre) and on each castle's rear crest
       for (const f of teamForts[t]) {
@@ -220,11 +235,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     engines = { trebs: [], towers: [] };
     for (let t = 0; t < 2; t++) {
       const dir = t === 0 ? 1 : -1, yaw = t === 0 ? Math.PI : 0;
-      for (const tx of [-22, 22])
-        engines.trebs.push({ id: arena.addTrebuchet(tx, dir * 48, yaw), team: t, x: tx, z: dir * 48, cd: 3 + rng() * 5 });
+      for (const tx of [-30, 30])
+        engines.trebs.push({ id: arena.addTrebuchet(tx, dir * 69, yaw), team: t, x: tx, z: dir * 69, cd: 3 + rng() * 5 });
       // aim the tower at a SOLID curtain section (offset from the gate) of the nearest
       // enemy castle, so its drawbridge opens a fresh breach rather than the gate
-      const id = arena.addTower(-18, dir * 45, yaw); // start just behind the army
+      const id = arena.addTower(-18, dir * 64, yaw); // start just behind the army
       engines.towers.push({ id, h: arena.towerHandle(id), team: t, dropped: false });
     }
     arena.sync();
@@ -240,7 +255,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
   if (dom) {
     // one zone in front of each team's home castle (x=0, z=±46) and one at midfield —
     // your own is easy to hold, the enemy's is a hard assault, the centre is the brawl
-    zones = [{ x: 0, z: 46, r: 12, holder: -1 }, { x: 0, z: 0, r: 12, holder: -1 }, { x: 0, z: -46, r: 12, holder: -1 }];
+    zones = [{ x: 0, z: 66, r: 14, holder: -1 }, { x: 0, z: 0, r: 14, holder: -1 }, { x: 0, z: -66, r: 14, holder: -1 }];
     tickets = [400, 400];
     sim.zones = zones; sim.tickets = tickets;
   }

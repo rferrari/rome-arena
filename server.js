@@ -20,7 +20,7 @@ const argStr = (name, def) => {
 };
 const PORT = arg('port', 8321);
 const TIER = setTier(argStr('tier', CONFIG.tier)); // low|mid|high|ultra scales the whole scene
-const PLAYERS = [Math.min(8, Math.max(1, arg('t0', CONFIG.players[0]))), Math.min(8, Math.max(1, arg('t1', CONFIG.players[1])))];
+const PLAYERS = [Math.min(12, Math.max(1, arg('t0', CONFIG.players[0]))), Math.min(12, Math.max(1, arg('t1', CONFIG.players[1])))];
 const FORT = arg('fort', 0) > 0; // --fort 1 spawns per-team destructible castles
 const CTF = arg('ctf', 0) > 0;  // --ctf 1 = capture-the-flag mode (small squads + flags)
 const DOM = arg('dom', 0) > 0;  // --dom 1 = domination (3 capture zones, ticket bleed)
@@ -76,7 +76,7 @@ const autoStart = AUTOSTART || (commanders[0] && commanders[1]);
 if (autoStart) { state = 'playing'; startRec(); }
 
 function claimSlot() {
-  for (let slot = 0; slot < 8; slot++) {
+  for (let slot = 0; slot < 12; slot++) {
     for (let team = 0; team < 2; team++) {
       if (slot >= PLAYERS[team]) continue;
       if (sim.ai.has(`${team}:${slot}`)) {

@@ -5,7 +5,7 @@
 export const CONFIG = {
   tier: 'low',
   maxBodies: 60000,     // physics body pool — large so ultra fits (soldiers+bricks+boulders+ragdoll bones)
-  subSteps: 4,          // box3d solver sub-steps/tick; 8 = stiffer masonry, more cost
+  subSteps: 2,          // box3d solver sub-steps/tick; higher = stiffer masonry, more cost
   players: [4, 4],      // armies per side; tier/CLI can override
   unitScale: 1,         // multiplies each unit's soldier count (tier scales battle size)
   ragdolls: { cap: 48, lifetime: 5 },  // real jointed ragdolls on death (14 bodies each), pooled
@@ -30,8 +30,10 @@ export const CONFIG = {
 const TIERS = {
   low:   { players: [4, 4], unitScale: 1.0, ragdolls: { cap: 48,  lifetime: 5 }, fortCourses: 5, render: { brickCap: 8000,  soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
   mid:   { players: [6, 6], unitScale: 1.0, ragdolls: { cap: 80,  lifetime: 6 }, fortCourses: 6, render: { brickCap: 12000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
-  high:  { players: [8, 8], unitScale: 1.0, ragdolls: { cap: 110, lifetime: 7 }, fortCourses: 7, render: { brickCap: 18000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
-  ultra: { players: [8, 8], unitScale: 1.5, ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
+  high:  { players: [8, 8],   unitScale: 1.0, ragdolls: { cap: 110, lifetime: 7 }, fortCourses: 7, render: { brickCap: 18000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
+  // ultra: many more COLUMNS spread across the big field (lower crowd density) rather
+  // than fatter units — looks huge and, thanks to fewer contacts, stays affordable
+  ultra: { players: [12, 12], unitScale: 1.0, ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
 };
 
 // Apply a tier's numbers into CONFIG (server side); returns the resolved tier name.

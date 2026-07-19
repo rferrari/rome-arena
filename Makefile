@@ -1,15 +1,18 @@
 PORT ?= 8321
 SEED ?= 42
-FORT ?= 0
+FORT ?= 1
 DOM ?= 0
 CTF ?= 0
-TIER ?= mid
+TIER ?= ultra
 
 # TIER (low|mid|high|ultra|xt) scales army size, ragdolls, castle detail + render quality.
 # Force the NVIDIA GPU in the BROWSER you open (Linux/Optimus) e.g.:
 #   __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia google-chrome http://localhost:8321
-start: ## run the battle server; TIER=low|mid|high|ultra|xt, FORT=1 adds castles
-	bun server.js --port $(PORT) --tier $(TIER) --seed $(SEED) --fort $(FORT)
+start: ## interactive menu — pick mode + tier, then launch (Enter = Siege / Ultra)
+	@bash menu.sh $(PORT) $(SEED)
+
+run: ## non-interactive launch; set TIER=/FORT=/DOM=/CTF= (default ultra siege)
+	bun server.js --port $(PORT) --tier $(TIER) --seed $(SEED) --fort $(FORT) --dom $(DOM) --ctf $(CTF)
 
 stress: ## max-scale stress test: ultra tier + castles
 	bun server.js --port $(PORT) --tier ultra --seed $(SEED) --fort 1
@@ -49,4 +52,4 @@ wasm-fort: ## build a castle and bombard it; assert masonry is stable then caves
 help:
 	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/'
 
-.PHONY: start stress ctf dom ai test wasm wasm-test wasm-bench wasm-fort help
+.PHONY: start run stress ctf dom ai test wasm wasm-test wasm-bench wasm-fort help

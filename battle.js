@@ -198,7 +198,7 @@ async function startSolo() {
   booting = true;
   const arena = await createArena({ maxBodies: CONFIG.maxBodies }); // browser-side box3d world for solo play
   mode = 'solo';
-  you = { team: 0, slot: -1 }; // -1 = owns all of team 0
+  you = { team: 0, slots: null }; // solo: null = commands all of team 0
   sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena, fort: location.hash.includes('fort'), dom: location.hash.includes('dom'), ctf: location.hash.includes('ctf') });
   for (let p = 0; p < 2; p++) sim.ai.delete(`0:${p}`);
   buildMeta(sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, n: u.n0 })));
@@ -246,6 +246,7 @@ function connect() {
         if (m.scores) scoresData = m.scores;
         if (m.zones) zonesData = m.zones;
         if (m.tickets) ticketsData = m.tickets;
+        strikeCdData = m.strikeCd || null;
         if (m.winner !== null && m.winner !== undefined) winner = m.winner;
       }
     } else if (mode === 'net') decodeSnapshot(e.data);
@@ -448,7 +449,7 @@ function updateFlags() {
 
 
 // ---------------- domination: capture-zone rings + ticket HUD ----------------
-let zonesData = null, ticketsData = null;
+let zonesData = null, ticketsData = null, strikeCdData = null;
 const ZONE_COLORS = [0xd23c3c, 0x3c64d2]; // holder red/blue; gray when unheld
 const zoneRings = [];
 const domEl = document.createElement('div');
@@ -650,7 +651,7 @@ function ownsUnit(j) {
   const u = meta.units[j];
   if (!you || you.spectator) return false;
   if (u.team !== you.team) return false;
-  return you.slot === -1 || u.slot === you.slot;
+  return !you.slots || you.slots.includes(u.slot); // null slots (solo) = whole team
 }
 function groundPoint(cx, cy) {
   ndc.set((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
@@ -923,7 +924,7 @@ function showLobby(roster) {
   fightBtn.textContent = 'FIGHT';
   fightBtn.style.display = you && you.spectator ? 'none' : '';
   rosterEl.innerHTML = roster.map((r) => {
-    const isYou = mode === 'solo' ? r.team === 0 : you && !you.spectator && r.team === you.team && r.slot === you.slot;
+    const isYou = mode === 'solo' ? r.team === 0 : you && !you.spectator && r.team === you.team && you.slots.includes(r.slot);
     return `<div class="row t${r.team}">${r.team === 0 ? 'Red' : 'Blue'} ${r.slot + 1} — ${isYou ? '<span class="you">YOU</span>' : r.human ? 'Human' : 'AI'}</div>`;
   }).join('');
   lobbyEl.style.display = 'flex';
@@ -934,9 +935,21 @@ fightBtn.onclick = () => {
   else { phase = 'playing'; lobbyEl.style.display = 'none'; }
 };
 
+// Wrath-of-the-Gods strike readiness line (only when the ability exists this battle)
+function strikeLine() {
+  const team = you && !you.spectator ? you.team : 0;
+  let cd = null;
+  if (mode === 'solo' && sim && sim.strikeReadyIn) cd = Math.round(sim.strikeReadyIn(team));
+  else if (strikeCdData) cd = strikeCdData[team];
+  if (cd === null || cd === undefined) return '';
+  return cd <= 0
+    ? `<br><b style="color:#f95">⚡ WRATH OF THE GODS ready — press B to smite (aim with mouse)</b>`
+    : `<br><span style="color:#caa">⚡ Wrath charging — ${cd}s</span>`;
+}
+
 function updateHud() {
   const modeLabel = mode === 'net'
-    ? (you.spectator ? 'ONLINE spectator' : `ONLINE — you are ${you.team === 0 ? 'Red' : 'Blue'} player ${you.slot + 1}`)
+    ? (you.spectator ? 'ONLINE spectator' : `ONLINE — you are ${you.team === 0 ? 'Red' : 'Blue'} (slots ${you.slots.map((s) => s + 1).join(',')})`)
     : 'SOLO vs AI (no server found)';
   let selLine = '';
   if (selected.size) {
@@ -953,7 +966,8 @@ function updateHud() {
   const fpsCol = fpsN >= 50 ? '#6d6' : fpsN >= 30 ? '#dd6' : '#e66';
   hud.innerHTML = `<b style="color:#e66">Red ${countsData[0]}</b> vs <b style="color:#68f">Blue ${countsData[1]}</b> — ${modeLabel}${selLine}` +
     `<br><span style="color:${fpsCol}">${fpsN} fps</span> · ${alive} soldiers · ${props} props` +
-    `<br>LMB drag: select · RMB drag: form line · RMB click: move · T: testudo/phalanx · [ ]: width · B: fire strike · WASD pan · wheel zoom`;
+    strikeLine() +
+    `<br>LMB drag: select · RMB drag: form line · RMB click: move · T: testudo/phalanx · [ ]: width · WASD pan · wheel zoom`;
 
   if (statsData) {
     const s = statsData;

@@ -182,9 +182,9 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     const F = CONFIG.fort;
     teamStance = F.stance;
     teamForts = [[], []];
-    // a square house: 4 short walls with door gaps at the corners (static, cheap)
+    // a square house: 4 walls with door gaps at the corners (static, cheap)
     const house = (cx, cz, hw = 3) => {
-      const g = 0.7, hc = 2;
+      const g = 0.7, hc = 3;
       arena.buildWall(cx - hw + g, cz - hw, cx + hw - g, cz - hw, hc);
       arena.buildWall(cx - hw + g, cz + hw, cx + hw - g, cz + hw, hc);
       arena.buildWall(cx - hw, cz - hw + g, cx - hw, cz + hw - g, hc);
@@ -206,9 +206,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         // the back-centre (the assault objective; its gate faces the enemy).
         arena.buildFort(0, 105, 14, F.courses + 3, -1);
         teamForts[t].push({ cx: 0, cz: 105, hs: 14, courses: F.courses + 3, gate: -1 });
-        const cw = 2, rf = 80, rb = 131;                          // city curtain: front z, back z
+        const cw = 5, rf = 80, rb = 131;                          // tall city curtain: front z, back z
         arena.buildWall(-92, rf, -9, rf, cw); arena.buildWall(9, rf, 92, rf, cw);   // front + central gate gap
         arena.buildWall(-92, rf, -92, rb, cw); arena.buildWall(92, rf, 92, rb, cw); // side walls
+        // manned gatehouse: archers on the front wall either side of the gate
+        for (const gx of [-30, 30]) makeUnit(t, 0, 'archer', gx, rf, facing, 4, { y: cw + 0.15, garrison: true });
         // house grid on wide streets (clear of the central avenue and the castle)
         for (const hx of [-82, -55, -28, 28, 55, 82]) for (const hz of [88, 120]) house(hx, hz, 4);
       } else {
@@ -219,7 +221,10 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         arena.buildRondel(0, bz, 6, 12, F.courses + 3);                                   // keep
         arena.buildRondel(0, bz, 17, 30, F.courses, Math.PI / 2, true);                   // curtain (objective), gate +z
         teamForts[t].push({ cx: 0, cz: bz, hs: 17, courses: F.courses, gate: 1 });
-        arena.buildRondel(0, bz, 33, 40, Math.max(2, F.courses - 2), Math.PI / 2, true);  // outer ring, gate +z
+        const orc = Math.max(3, F.courses - 2);
+        arena.buildRondel(0, bz, 33, 40, orc, Math.PI / 2, true);  // outer ring, gate +z
+        // archers manning the outer ring's front, either side of its gate
+        for (const gx of [-16, 16]) makeUnit(t, 0, 'archer', gx, bz + 30, facing, 4, { y: orc + 0.15, garrison: true });
         for (let k = 0; k < 8; k++) {                            // ring of houses between curtain & outer wall
           const a = (k + 0.5) * (Math.PI / 4);
           if (Math.sin(a) > 0.6) continue;                       // leave the +z gate lane clear
@@ -277,11 +282,17 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
   // five fire-pot explosions march in a line toward the enemy side. One per team on
   // a long cooldown; humans aim it with B, the AI drops it on the densest formation.
   let strikes = null;
+  const STRIKE_CD = 60;
   if (fort || dom) {
-    strikes = { ready: [40, 40], queue: [] };
+    strikes = { ready: [8, 8], queue: [] }; // first barrage available at t=8
+    sim.strikeReadyIn = (team) => Math.max(0, strikes.ready[team] - sim.time); // seconds until ready (HUD)
     sim.strike = (team, x, z) => {
-      if (sim.winner !== null || sim.time < strikes.ready[team]) return false;
-      strikes.ready[team] = sim.time + 75;
+      if (sim.winner !== null) return false;
+      if (sim.time < strikes.ready[team]) {
+        events.push(['note', `Wrath of the Gods charging — ${Math.ceil(strikes.ready[team] - sim.time)}s`]);
+        return false;
+      }
+      strikes.ready[team] = sim.time + STRIKE_CD;
       strikes.queue.push({
         x: clamp(x, -FIELD_W / 2 + 5, FIELD_W / 2 - 5),
         z: clamp(z, -FIELD_D / 2 + 5, FIELD_D / 2 - 5),
@@ -630,8 +641,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         continue;
       }
 
-      if (u.broken) { // rout: run for your own map edge (piles at the wall, then flees)
-        setVel(s, s.x, u.team === 0 ? FIELD_D : -FIELD_D, s.speed * 1.15, dt);
+      if (u.broken) { // rout: scatter out the NEAREST OPEN FLANK (around the city walls,
+        // which sit on the backline) rather than piling into the home-city gate
+        const ex = (s.x >= 0 ? 1 : -1) * (FIELD_W / 2);
+        const ez = s.z + (u.team === 0 ? 1 : -1) * 25;
+        setVel(s, ex, ez, s.speed * 1.15, dt);
         continue;
       }
 
@@ -644,7 +658,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
       }
 
       const speedMult = u.stance && T.alt ? T.alt.speedMult : 1;
-      const navUnit = nav && teamStance[u.team] === 'attack' && T !== TYPES.catapult && u.role !== 'guard';
+      // Only AI-driven slots auto-assault along the siege flow field. A slot commanded
+      // by a human or an LLM general (removed from sim.ai) OBEYS its orders — it forms
+      // up at the ordered point and fights locally instead of being dragged to the wall.
+      const commanded = !sim.ai.has(`${u.team}:${u.slot}`);
+      const navUnit = nav && teamStance[u.team] === 'attack' && T !== TYPES.catapult && u.role !== 'guard' && !commanded;
       const enemy = nearestEnemy(s, SEEK_RANGE);
       const eDist = enemy ? Math.hypot(enemy.x - s.x, enemy.z - s.z) : Infinity;
 
@@ -720,7 +738,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         u.facing = Math.atan2(ec.x - u.cx, ec.z - u.cz);
         events.push(['note', `${teamName(u.team)} ${u.typeKey} rallied`]);
       }
-      if (u.broken && Math.abs(u.cz) > FIELD_D / 2 - 8) { // reached the perimeter wall
+      if (u.broken && (Math.abs(u.cx) > FIELD_W / 2 - 8 || Math.abs(u.cz) > FIELD_D / 2 - 8)) { // reached a perimeter
         for (const s of u.soldiers) if (s.state !== 2) s.state = 2;
         u.alive = 0;
         events.push(['note', `${teamName(u.team)} ${u.typeKey} fled the field`]);
@@ -791,11 +809,12 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         const o = tw.h * STE, rx = xfE[o], rz = xfE[o + 2];
         let cap = null, cd = Infinity; // nearest enemy capital (skip solid towers)
         for (const f of teamForts[1 - tw.team]) if (!f.tower) { const dd = Math.hypot(f.cx - rx, f.cz - rz); if (dd < cd) { cd = dd; cap = f; } }
-        if (cap && cd < cap.hs + 5) { // reached the wall: drop + breach just ahead
+        if (cap && cd < cap.hs + 6) { // reached the wall: drop the bridge + tear a big breach
           arena.towerDrive(tw.id, 0, 0);
           arena.towerDrop(tw.id);
-          arena.breach(rx + ((cap.cx - rx) / cd) * 4, 1, rz + ((cap.cz - rz) / cd) * 4, 7);
-          events.push(['note', `${teamName(tw.team)} siege tower breaches the wall!`]);
+          arena.breach(rx + ((cap.cx - rx) / cd) * 5, 1, rz + ((cap.cz - rz) / cd) * 5, 11);
+          assault[tw.team] = 'storm'; // the tower's breach sounds the assault immediately
+          events.push(['note', `${teamName(tw.team)} siege tower breaches the wall — storm!`]);
           tw.dropped = true;
           continue;
         }
@@ -961,23 +980,25 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     // winner: annihilation, or a STALEMATE call — e.g. only unreachable wall
     // garrisons left, or both sides too depleted to close. If nobody has died for
     // 25s late in the battle, the side with more survivors (morale tiebreak) wins.
-    const counts = [0, 0];
-    for (const s of soldiers) if (s.state === 0) counts[s.unit.team]++;
+    const counts = [0, 0], mobile = [0, 0];
+    for (const s of soldiers) if (s.state === 0) {
+      counts[s.unit.team]++;
+      if (!s.unit.garrison && !s.unit.broken) mobile[s.unit.team]++; // can still fight/advance
+    }
     sim.counts = counts;
-    if (sim.winner === null && (counts[0] === 0 || counts[1] === 0)) {
-      sim.winner = counts[0] === 0 ? 1 : 0;
-      events.push(['over', sim.winner]);
-    } else if (sim.winner === null && sim.time > 60 && sim.time - lastKill > 25) {
-      let w;
-      if (counts[0] !== counts[1]) w = counts[0] > counts[1] ? 0 : 1;
-      else {
-        const m = [0, 0];
-        for (const u of units) if (u.alive > 0) m[u.team] += u.morale;
-        w = m[0] >= m[1] ? 0 : 1;
-      }
-      sim.winner = w;
-      events.push(['note', `Stalemate — ${teamName(w)} holds the field!`]);
-      events.push(['over', w]);
+    const decide = (w, msg) => { sim.winner = w; if (msg) events.push(['note', msg]); events.push(['over', w]); };
+    const byField = () => { // more survivors, morale as tiebreak
+      if (counts[0] !== counts[1]) return counts[0] > counts[1] ? 0 : 1;
+      const m = [0, 0];
+      for (const u of units) if (u.alive > 0) m[u.team] += u.morale;
+      return m[0] >= m[1] ? 0 : 1;
+    };
+    if (sim.winner === null) {
+      if (counts[0] === 0 || counts[1] === 0) decide(counts[0] === 0 ? 1 : 0);        // annihilated
+      else if (mobile[0] === 0 || mobile[1] === 0)                                     // only wall garrisons/routers left — can't win
+        decide(mobile[0] === 0 ? 1 : 0, `${teamName(mobile[0] === 0 ? 1 : 0)} breaks the siege — no army left to oppose them!`);
+      else if (sim.time > 60 && sim.time - lastKill > 20) decide(byField(), `Stalemate — ${teamName(byField())} holds the field!`); // lull
+      else if (sim.time > 300) decide(byField(), `Time — ${teamName(byField())} holds the field!`);                                  // hard cap
     }
   }
 

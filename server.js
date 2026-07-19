@@ -26,6 +26,7 @@ const CTF = arg('ctf', 0) > 0;  // --ctf 1 = capture-the-flag mode (small squads
 const DOM = arg('dom', 0) > 0;  // --dom 1 = domination (3 capture zones, ticket bleed)
 const AI_TURN = arg('aiturn', 10); // seconds between LLM-general orders (mind Groq TPM limits)
 const AUTOSTART = arg('autostart', 0) > 0; // begin the battle with no human FIGHT press
+const SEATS = Math.max(1, arg('seats', 2)); // slots a single client commands (default 2)
 
 // LLM generals per team: --ai0 groq --ai1 mock  (providers: groq|openai|pioneer|mock|none)
 const commanders = [null, null];
@@ -42,7 +43,7 @@ const arena = await createArena({ maxBodies: CONFIG.maxBodies }); // one box3d w
 function resetSim(seed = (Math.random() * 1e9) | 0) {
   sim = createSim({ seed, players: PLAYERS, arena, fort: FORT, dom: DOM, ctf: CTF });
   state = 'lobby';
-  for (const who of clients.values()) if (!who.spectator) sim.ai.delete(`${who.team}:${who.slot}`);
+  for (const who of clients.values()) if (!who.spectator) for (const s of who.slots) sim.ai.delete(`${who.team}:${s}`);
   // an LLM-commanded team is driven only by its general, not the built-in unit AI
   for (let t = 0; t < 2; t++) if (commanders[t]) for (let s = 0; s < PLAYERS[t]; s++) sim.ai.delete(`${t}:${s}`);
 }
@@ -75,14 +76,15 @@ async function saveRec() {
 const autoStart = AUTOSTART || (commanders[0] && commanders[1]);
 if (autoStart) { state = 'playing'; startRec(); }
 
+// A client commands up to SEATS slots (default 2), all on one team.
 function claimSlot() {
-  for (let slot = 0; slot < 16; slot++) {
-    for (let team = 0; team < 2; team++) {
-      if (slot >= PLAYERS[team]) continue;
-      if (sim.ai.has(`${team}:${slot}`)) {
-        sim.ai.delete(`${team}:${slot}`);
-        return { team, slot };
-      }
+  for (let team = 0; team < 2; team++) {
+    const free = [];
+    for (let slot = 0; slot < PLAYERS[team]; slot++) if (sim.ai.has(`${team}:${slot}`)) free.push(slot);
+    if (free.length) {
+      const slots = free.slice(0, SEATS);
+      for (const s of slots) sim.ai.delete(`${team}:${s}`);
+      return { team, slots };
     }
   }
   return { spectator: true };
@@ -189,7 +191,7 @@ Bun.serve({
     close(ws) {
       const who = clients.get(ws);
       clients.delete(ws);
-      if (who && !who.spectator) sim.ai.add(`${who.team}:${who.slot}`); // AI takes over
+      if (who && !who.spectator) for (const s of who.slots) sim.ai.add(`${who.team}:${s}`); // AI takes over
       broadcast(lobbyMsg());
       console.log('leave', who);
     },
@@ -216,7 +218,7 @@ Bun.serve({
       if (m.type === 'strike' && Array.isArray(m.p) && sim.strike) { sim.strike(who.team, +m.p[0], +m.p[1]); return; }
       const owned = (m.unitIds || []).filter((i) => {
         const u = sim.units[i];
-        return u && u.team === who.team && u.slot === who.slot;
+        return u && u.team === who.team && who.slots.includes(u.slot);
       });
       if (!owned.length) return;
       if (m.type === 'order' && m.p0 && m.p1) sim.order(owned, { x: +m.p0[0], z: +m.p0[1] }, { x: +m.p1[0], z: +m.p1[1] });
@@ -235,7 +237,8 @@ setInterval(() => {
   const ev = sim.drainEvents();
   // flags carry a live soldier ref (cyclic) — send only the plain render fields
   const flags = sim.flags ? sim.flags.map((f) => ({ team: f.team, x: f.x, z: f.z, state: f.state })) : undefined;
-  const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner, flags, scores: sim.scores, zones: sim.zones, tickets: sim.tickets });
+  const strikeCd = sim.strikeReadyIn ? [Math.round(sim.strikeReadyIn(0)), Math.round(sim.strikeReadyIn(1))] : null;
+  const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner, flags, scores: sim.scores, zones: sim.zones, tickets: sim.tickets, strikeCd });
   for (const ws of clients.keys()) { ws.send(snap); ws.send(evMsg); }
   // record this frame (base64 snapshot + any decisions since last frame) for replay
   if (rec && state === 'playing') {

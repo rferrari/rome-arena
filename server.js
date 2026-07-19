@@ -22,6 +22,7 @@ const PORT = arg('port', 8321);
 const TIER = setTier(argStr('tier', CONFIG.tier)); // low|mid|high|ultra scales the whole scene
 const PLAYERS = [Math.min(4, Math.max(1, arg('t0', CONFIG.players[0]))), Math.min(4, Math.max(1, arg('t1', CONFIG.players[1])))];
 const FORT = arg('fort', 0) > 0; // --fort 1 spawns per-team destructible castles
+const DOM = arg('dom', 0) > 0;  // --dom 1 = domination (3 capture zones, ticket bleed)
 const AI_TURN = arg('aiturn', 10); // seconds between LLM-general orders (mind Groq TPM limits)
 const AUTOSTART = arg('autostart', 0) > 0; // begin the battle with no human FIGHT press
 
@@ -38,7 +39,7 @@ let sim, state; // state: 'lobby' | 'playing'
 const arena = await createArena({ maxBodies: CONFIG.maxBodies }); // one box3d world, reused per battle
 
 function resetSim(seed = (Math.random() * 1e9) | 0) {
-  sim = createSim({ seed, players: PLAYERS, arena, fort: FORT });
+  sim = createSim({ seed, players: PLAYERS, arena, fort: FORT, dom: DOM });
   state = 'lobby';
   for (const who of clients.values()) if (!who.spectator) sim.ai.delete(`${who.team}:${who.slot}`);
   // an LLM-commanded team is driven only by its general, not the built-in unit AI
@@ -116,7 +117,7 @@ function snapshot() {
   const nS = sim.soldiers.length, nU = sim.units.length;
   const xf = sim.arena.transforms, ST = sim.arena.XF_STRIDE, count = sim.arena.count;
   const props = [];
-  for (let h = 0; h < count; h++) { const k = xf[h * ST + 7]; if (k === 2 || k === 5 || k === 6) props.push(h); }
+  for (let h = 0; h < count; h++) { const k = xf[h * ST + 7]; if (k === 2 || k === 5 || k === 6 || k === 7 || k === 8) props.push(h); }
   const nP = props.length;
 
   const buf = new ArrayBuffer(5 + nS * 6 + nU * 7 + 2 + nP * PROP_BYTES);
@@ -128,7 +129,7 @@ function snapshot() {
     v.setInt16(o, Math.round(s.x * 100), true);
     v.setInt16(o + 2, Math.round(s.z * 100), true);
     v.setUint8(o + 4, Math.round(((s.face % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) / (Math.PI * 2) * 255));
-    v.setUint8(o + 5, s.state | (s.fightT > 0 ? 4 : 0) | (s.unit.broken ? 8 : 0) | (s.unit.stance ? 16 : 0));
+    v.setUint8(o + 5, s.state | (s.fightT > 0 ? 4 : 0) | (s.unit.broken ? 8 : 0) | (s.unit.stance ? 16 : 0) | (s.down > 0 ? 32 : 0));
     o += 6;
   }
   for (const u of sim.units) {
@@ -228,7 +229,7 @@ setInterval(() => {
   tick++;
   const snap = snapshot();
   const ev = sim.drainEvents();
-  const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner });
+  const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner, zones: sim.zones, tickets: sim.tickets });
   for (const ws of clients.keys()) { ws.send(snap); ws.send(evMsg); }
   // record this frame (base64 snapshot + any decisions since last frame) for replay
   if (rec && state === 'playing') {

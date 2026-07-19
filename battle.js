@@ -159,6 +159,7 @@ function setupNetReaders() {
     out.fighting = !!(f & 4);
     out.broken = !!(f & 8);
     out.stance = !!(f & 16);
+    out.down = !!(f & 32);
     if (out.state === 1 && !dieTime.has(i)) dieTime.set(i, performance.now());
     out.deathT = out.state === 1 ? (performance.now() - (dieTime.get(i) ?? performance.now())) / 1000 : 0;
     return true;
@@ -180,6 +181,7 @@ function setupSoloReaders() {
     out.x = s.x; out.z = s.z; out.face = s.face;
     out.state = s.state; out.fighting = s.fightT > 0;
     out.broken = s.unit.broken; out.stance = !!s.unit.stance;
+    out.down = s.down > 0;
     out.deathT = s.deathT;
     return true;
   };
@@ -196,7 +198,7 @@ async function startSolo() {
   const arena = await createArena({ maxBodies: CONFIG.maxBodies }); // browser-side box3d world for solo play
   mode = 'solo';
   you = { team: 0, slot: -1 }; // -1 = owns all of team 0
-  sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena, fort: location.hash.includes('fort') });
+  sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena, fort: location.hash.includes('fort'), dom: location.hash.includes('dom') });
   for (let p = 0; p < 2; p++) sim.ai.delete(`0:${p}`);
   buildMeta(sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, n: u.n0 })));
   setupSoloReaders();
@@ -239,6 +241,8 @@ function connect() {
       } else if (m.type === 'ev') {
         for (const ev of m.e) handleEvent(ev);
         statsData = m.stats; countsData = m.counts || countsData;
+        if (m.zones) zonesData = m.zones;
+        if (m.tickets) ticketsData = m.tickets;
         if (m.winner !== null && m.winner !== undefined) winner = m.winner;
       }
     } else if (mode === 'net') decodeSnapshot(e.data);
@@ -366,7 +370,13 @@ const ragdollMesh = new THREE.InstancedMesh(
   new THREE.MeshStandardMaterial({ color: 0x8a5a3a, roughness: 0.9 }),
   RAGDOLL_BONE_CAP
 );
-for (const m of [brickMesh, ragdollMesh]) {
+// siege engines (trebuchet frames/arms + battering rams) — wooden boxes
+const woodMesh = new THREE.InstancedMesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshStandardMaterial({ color: 0x6b4626, roughness: 0.9 }),
+  96
+);
+for (const m of [brickMesh, ragdollMesh, woodMesh]) {
   m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   m.frustumCulled = false;
   m.castShadow = false;
@@ -405,9 +415,40 @@ function setLeaderAnim(L, name) {
   }
 })();
 
-let lastBricks = 0, lastRags = 0;
+// ---------------- domination: capture-zone rings + ticket HUD ----------------
+let zonesData = null, ticketsData = null;
+const ZONE_COLORS = [0xd23c3c, 0x3c64d2]; // holder red/blue; gray when unheld
+const zoneRings = [];
+const domEl = document.createElement('div');
+domEl.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);font:bold 20px system-ui;text-shadow:0 2px 5px #000;display:none;color:#ddd;pointer-events:none';
+document.body.appendChild(domEl);
+function updateDom() {
+  const zs = mode === 'solo' ? (sim && sim.zones) : zonesData;
+  const tk = mode === 'solo' ? (sim && sim.tickets) : ticketsData;
+  if (!zs) { domEl.style.display = 'none'; for (const r of zoneRings) r.visible = false; return; }
+  while (zoneRings.length < zs.length) {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(zs[zoneRings.length].r - 1, zs[zoneRings.length].r, 48),
+      new THREE.MeshBasicMaterial({ color: 0x999999, transparent: true, opacity: 0.75, side: THREE.DoubleSide })
+    );
+    ring.rotation.x = -Math.PI / 2; ring.position.y = 0.1;
+    scene.add(ring); zoneRings.push(ring);
+  }
+  zs.forEach((z, i) => {
+    const r = zoneRings[i];
+    r.visible = true;
+    r.position.set(z.x, 0.1, z.z);
+    r.material.color.setHex(z.holder === -1 ? 0x999999 : ZONE_COLORS[z.holder]);
+  });
+  if (tk) {
+    domEl.style.display = 'block';
+    domEl.innerHTML = `<span style="color:#e88">⚑ Red ${tk[0]}</span> &nbsp;·&nbsp; <span style="color:#8ae">${tk[1]} Blue ⚑</span>`;
+  }
+}
+
+let lastBricks = 0, lastRags = 0, lastWood = 0;
 function updateProps() {
-  let nb = 0, nr = 0;
+  let nb = 0, nr = 0, nw = 0;
   const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
     dummy.position.set(x, y, z);
     dummy.quaternion.set(qx, qy, qz, qw);
@@ -415,6 +456,10 @@ function updateProps() {
       if (nr >= ragdollMesh.count) return;
       dummy.scale.set(hx, hy, hz);
       dummy.updateMatrix(); ragdollMesh.setMatrixAt(nr++, dummy.matrix);
+    } else if (kind === 7 || kind === 8) { // siege engine timber (trebuchet frame/arm, ram)
+      if (nw >= woodMesh.count) return;
+      dummy.scale.set(hx * 2, hy * 2, hz * 2);
+      dummy.updateMatrix(); woodMesh.setMatrixAt(nw++, dummy.matrix);
     } else { // brick (2) or rubble (6)
       if (nb >= brickMesh.count) return;
       dummy.scale.set(hx * 2, hy * 2, hz * 2);
@@ -425,7 +470,7 @@ function updateProps() {
     const xf = sim.arena.transforms, ST = sim.arena.XF_STRIDE, cnt = sim.arena.count;
     for (let h = 0; h < cnt; h++) {
       const b = h * ST, k = xf[b + 7];
-      if (k === 2 || k === 5 || k === 6) put(k, xf[b], xf[b + 1], xf[b + 2], xf[b + 3], xf[b + 4], xf[b + 5], xf[b + 6], xf[b + 8], xf[b + 9], xf[b + 10]);
+      if (k === 2 || k === 5 || k === 6 || k === 7 || k === 8) put(k, xf[b], xf[b + 1], xf[b + 2], xf[b + 3], xf[b + 4], xf[b + 5], xf[b + 6], xf[b + 8], xf[b + 9], xf[b + 10]);
     }
   } else { // net or replay: props come from the latest decoded snapshot
     const s = snaps[snaps.length - 1];
@@ -437,9 +482,11 @@ function updateProps() {
   dummy.scale.setScalar(0); dummy.updateMatrix();
   for (let i = nb; i < lastBricks; i++) brickMesh.setMatrixAt(i, dummy.matrix);
   for (let i = nr; i < lastRags; i++) ragdollMesh.setMatrixAt(i, dummy.matrix);
-  lastBricks = nb; lastRags = nr;
+  for (let i = nw; i < lastWood; i++) woodMesh.setMatrixAt(i, dummy.matrix);
+  lastBricks = nb; lastRags = nr; lastWood = nw;
   brickMesh.instanceMatrix.needsUpdate = true;
   ragdollMesh.instanceMatrix.needsUpdate = true;
+  woodMesh.instanceMatrix.needsUpdate = true;
 }
 
 const stonePool = [];
@@ -516,6 +563,11 @@ function handleEvent(ev) {
     spawnParticles(a[0], 0.5, a[1], 45, 0xff8833, 9, 0.9);
     spawnParticles(a[0], 0.5, a[1], 30, 0x777777, 5, 1.4);
     spawnParticles(a[0], 0.3, a[1], 20, 0xbbaa88, 7, 0.8);
+  } else if (kind === 'firebomb') { // fire pot: a much bigger fireball + smoke column
+    spawnParticles(a[0], 0.6, a[1], 90, 0xff5511, 16, 1.2);
+    spawnParticles(a[0], 1.0, a[1], 60, 0xffcc33, 12, 0.9);
+    spawnParticles(a[0], 1.5, a[1], 50, 0x333333, 6, 2.2);
+    spawnParticles(a[0], 0.3, a[1], 30, 0xbbaa88, 10, 1.0);
   } else if (kind === 'shot') {
     flyingStones.push({ sx: a[0], sz: a[1], tx: a[2], tz: a[3], dur: a[4], t: 0, mesh: getStone() });
     spawnParticles(a[0], 2, a[1], 8, 0xbbaa88, 3, 0.6);
@@ -684,20 +736,22 @@ function updateInstances(dt) {
     const pv = soPrev[i] || (soPrev[i] = { x: rs.x, z: rs.z });
     const spd = Math.hypot(rs.x - pv.x, rs.z - pv.z) / Math.max(dt, 1e-3);
     pv.x = rs.x; pv.z = rs.z;
-    const amp = Math.min(1, spd / 2.5);
+    const downed = !!rs.down;
+    const amp = downed ? 0 : Math.min(1, spd / 2.5);
     walkPhase[i] += (3 + spd * 1.5) * dt;
     const sw = Math.sin(walkPhase[i]) * 0.7 * amp;
     const bob = Math.abs(Math.sin(walkPhase[i])) * 0.04 * amp;
     const sc = isCav ? 1.18 : 1.0;
 
     _qY.setFromAxisAngle(_YA, rs.face);
-    _root.compose(_pos.set(rs.x, 0, rs.z), _qY, _pos2.set(sc, sc, sc));
+    if (downed) { _qX.setFromAxisAngle(_XA, -1.42); _qY.multiply(_qX); } // knocked flat on their back
+    _root.compose(_pos.set(rs.x, 0, rs.z), _qY, _pos2.set(sc, sc, sc)); // downed: rotation lays parts near y≈0.1-0.2
     placePart(hTorso, i, 0, 0.98 + bob, 0, 0);
     placePart(hHead, i, 0, 1.42 + bob, 0, 0);
-    placePart(hLeg, i * 2, 0.09, 0.74, 0, sw);
-    placePart(hLeg, i * 2 + 1, -0.09, 0.74, 0, -sw);
-    const rArm = rs.fighting ? -1.3 : sw * 0.8;       // right arm strikes when fighting
-    placePart(hArm, i * 2, 0.24, 1.2, 0, -sw * 0.8);
+    placePart(hLeg, i * 2, 0.09, 0.74, 0, downed ? 0.35 : sw);
+    placePart(hLeg, i * 2 + 1, -0.09, 0.74, 0, downed ? 0.2 : -sw);
+    const rArm = downed ? 0.6 : rs.fighting ? -1.3 : sw * 0.8; // splayed when down, strike when fighting
+    placePart(hArm, i * 2, 0.24, 1.2, 0, downed ? 0.5 : -sw * 0.8);
     placePart(hArm, i * 2 + 1, -0.24, 1.2, 0, rArm);
     if (rs.fighting && Math.random() < dt * 1.2) spawnParticles(rs.x, 1.2, rs.z, 2, 0xaa1515, 3, 0.5);
 
@@ -981,6 +1035,7 @@ function frame(now) {
   if (mode) {
     updateInstances(dt);
     updateProps();
+    updateDom();
     updateProjectiles(dt);
     updateParticles(dt);
     hudT -= dt;

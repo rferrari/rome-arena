@@ -150,17 +150,18 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     teamForts = [[], []];
     for (let t = 0; t < 2; t++) {
       const dir = t === 0 ? 1 : -1, facing = t === 0 ? Math.PI : 0;
-      // forward watchtowers near the CENTRE (both cities) — pulled ~30% back toward
-      // each team's own side so they sit just ahead of the deployment line, not on
-      // the midfield border. Field borders stay open for flanking cavalry sweeps.
+      // forward watchtowers near the CENTRE (both cities) — a SINGLE round tower each
+      // (not a full fort), pulled ~30% back toward each team's own side. They're
+      // lookout/garrison points, not gated objectives, so they're `tower:true` and the
+      // flow field routes AROUND them rather than trying to enter them.
       for (const tx of [-30, 30]) {
-        arena.buildFort(tx, dir * 24, 5, F.courses, -dir);
-        teamForts[t].push({ cx: tx, cz: dir * 24, hs: 5, courses: F.courses });
+        arena.buildRondel(tx, dir * 24, 3.5, 10, F.courses + 2); // one solid round tower
+        teamForts[t].push({ cx: tx, cz: dir * 24, hs: 3.5, courses: F.courses + 2, tower: true });
       }
       if (t === 0) {
-        // RED grid city
+        // RED grid city — the king castle is the assault objective (gate faces enemy)
         arena.buildFort(0, 56, 10, F.courses + 3, -1);
-        teamForts[t].push({ cx: 0, cz: 56, hs: 10, courses: F.courses + 3 });
+        teamForts[t].push({ cx: 0, cz: 56, hs: 10, courses: F.courses + 3, gate: -1 });
         const hw = 3, g = 0.6, hc = 2; // square houses with door-gap corners
         for (const hx of [-40, -26, 26, 40]) for (const hz of [48, 62]) {
           arena.buildWall(hx - hw + g, hz - hw, hx + hw - g, hz - hw, hc);
@@ -169,17 +170,18 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
           arena.buildWall(hx + hw, hz - hw + g, hx + hw, hz + hw - g, hc);
         }
       } else {
-        // BLUE radial onion city
+        // BLUE radial onion city — the gated curtain is the assault objective
         arena.buildRondel(0, -54, 4.5, 12, F.courses + 3);                                  // round keep
         arena.buildRondel(0, -54, 13, 22, Math.max(3, F.courses - 1), Math.PI / 2, true);   // curtain, gate to enemy
-        teamForts[t].push({ cx: 0, cz: -54, hs: 13, courses: Math.max(3, F.courses - 1) });
+        teamForts[t].push({ cx: 0, cz: -54, hs: 13, courses: Math.max(3, F.courses - 1), gate: 1 });
         for (const [hx, hz] of [[-19, -46], [19, -46], [-22, -58], [22, -58], [-10, -66], [10, -66]])
           arena.buildRondel(hx, hz, 2.2, 7, 2); // round houses ringing the curtain
       }
-      // battlement garrisons on each objective's rear crest
+      // battlement garrisons: on the tower tops (centre) and on each castle's rear crest
       for (const f of teamForts[t]) {
         const nArch = f.hs >= 10 ? 6 : 3;
-        makeUnit(t, 0, 'archer', f.cx, f.cz + dir * f.hs, facing, nArch, { y: f.courses + 0.15, garrison: true });
+        const gz = f.tower ? f.cz : f.cz + dir * f.hs; // towers: stand on top; castles: rear wall
+        makeUnit(t, 0, 'archer', f.cx, gz, facing, nArch, { y: f.courses + 0.15, garrison: true });
       }
     }
     // jointed siege engines: two trebuchets (motor-swung revolute arms) and one
@@ -234,7 +236,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     for (let t = 0; t < 2; t++) {
       nav[t].clearBlocked();
       for (let h = 0; h < n; h++) { const b = h * ST; if (xf[b + 7] === 2) nav[t].blockWorld(xf[b], xf[b + 2]); }
-      const goals = teamForts[1 - t].map((f) => ({ x: f.cx, z: f.cz - (f.cz >= 0 ? 1 : -1) * (f.hs - 2) })); // just inside each gate
+      // goal = the courtyard just inside each ENTERABLE enemy castle's gate (solid
+      // watchtowers are obstacles, not objectives — the field routes around them)
+      const goals = teamForts[1 - t]
+        .filter((f) => !f.tower)
+        .map((f) => ({ x: f.cx, z: f.cz - (f.cz >= 0 ? 1 : -1) * (f.hs - 2) }));
       nav[t].compute(goals);
     }
   }
@@ -469,29 +475,36 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
       }
 
       const speedMult = u.stance && T.alt ? T.alt.speedMult : 1;
+      const navUnit = nav && teamStance[u.team] === 'attack' && T !== TYPES.catapult;
       const enemy = nearestEnemy(s, SEEK_RANGE);
-      if (enemy) {
-        const d = Math.hypot(enemy.x - s.x, enemy.z - s.z);
+      const eDist = enemy ? Math.hypot(enemy.x - s.x, enemy.z - s.z) : Infinity;
+
+      if (enemy && eDist <= T.range) {
+        // in contact: fight (ranged units also melee when something's on top of them)
         s.face = Math.atan2(enemy.x - s.x, enemy.z - s.z);
-        if (d <= T.range) {
-          setStop(s);
-          s.cd -= dt;
-          if (s.cd <= 0) { s.cd = T.cd + rng() * ATTACK_CD_JIT; attack(s, enemy); }
-        } else if (u.stance && T.alt) {
-          // phalanx/testudo holds ranks: advance as a block, never chase
+        setStop(s);
+        s.cd -= dt;
+        if (s.cd <= 0) { s.cd = T.cd + rng() * ATTACK_CD_JIT; attack(s, enemy); }
+      } else if (navUnit) {
+        // ASSAULT: follow the wall-routing flow field toward the enemy castle right up
+        // until melee contact, so the army funnels through gates instead of piling on
+        // walls to reach an enemy it can see over them. Archers still loose on the move.
+        if (T.ranged) fireArrowMaybe(s, dt);
+        const dir = nav[u.team].sample(s.x, s.z);
+        if (dir) { s.face = Math.atan2(dir.x, dir.z); setVel(s, s.x + dir.x, s.z + dir.z, s.speed * speedMult, dt); }
+        else if (enemy) { s.face = Math.atan2(enemy.x - s.x, enemy.z - s.z); setVel(s, enemy.x, enemy.z, s.speed * speedMult, dt); }
+        else moveToSlot(s, u, speedMult, dt); // arrived at the objective — brawl in formation
+      } else if (enemy) {
+        // defenders / open field: engage the nearby enemy directly
+        s.face = Math.atan2(enemy.x - s.x, enemy.z - s.z);
+        if (u.stance && T.alt) { // phalanx/testudo holds ranks: advance as a block, never chase
           slotPos(u, s.slot, slotP);
           setVel(s, slotP.x, slotP.z, s.speed * speedMult, dt);
         } else setVel(s, enemy.x, enemy.z, s.speed * speedMult, dt);
       } else {
+        // no enemy near: defenders hold their formed line in front of their own castle
         if (T.ranged) fireArrowMaybe(s, dt);
-        // No enemy nearby: only an ATTACKING team marches (flow field, around walls
-        // and through the gate, toward the enemy fort). Defenders hold their formed
-        // line in front of their own castle rather than piling inside it.
-        if (nav && teamStance[u.team] === 'attack' && T !== TYPES.catapult) {
-          const dir = nav[u.team].sample(s.x, s.z); // this team's field toward the enemy castles
-          if (dir) { s.face = Math.atan2(dir.x, dir.z); setVel(s, s.x + dir.x, s.z + dir.z, s.speed * speedMult, dt); }
-          else moveToSlot(s, u, speedMult, dt); // reached the objective — brawl in formation
-        } else moveToSlot(s, u, speedMult, dt);
+        moveToSlot(s, u, speedMult, dt);
       }
     }
 

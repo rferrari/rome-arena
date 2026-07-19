@@ -208,12 +208,17 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         makeUnit(t, 0, 'archer', f.cx, gz, facing, nArch, { y: f.courses + 0.15, garrison: true });
       }
     }
-    // jointed siege engines: two motor-swung trebuchets per team
-    engines = { trebs: [] };
+    // jointed siege engines: two motor-swung trebuchets per team, plus one wheeled
+    // siege tower per team that rolls up to a solid wall section and drops its drawbridge.
+    engines = { trebs: [], towers: [] };
     for (let t = 0; t < 2; t++) {
       const dir = t === 0 ? 1 : -1, yaw = t === 0 ? Math.PI : 0;
       for (const tx of [-22, 22])
         engines.trebs.push({ id: arena.addTrebuchet(tx, dir * 48, yaw), team: t, x: tx, z: dir * 48, cd: 3 + rng() * 5 });
+      // aim the tower at a SOLID curtain section (offset from the gate) of the nearest
+      // enemy castle, so its drawbridge opens a fresh breach rather than the gate
+      const id = arena.addTower(-18, dir * 45, yaw); // start just behind the army
+      engines.towers.push({ id, h: arena.towerHandle(id), team: t, dropped: false });
     }
     arena.sync();
     nav = [createFlowField(FIELD_W, FIELD_D, F.navCell), createFlowField(FIELD_W, FIELD_D, F.navCell)];
@@ -670,6 +675,27 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         const tx = ef.cx + (rng() - 0.5) * 2 * ef.hs, tz = ef.cz + (rng() - 0.5) * 2 * ef.hs;
         const dur = 1.8 + fd / 35;
         arena.trebuchetFire(tb.id, (tx - tb.x) / dur, (0 - TREB_H) / dur + 0.5 * GRAVITY * dur, (tz - tb.z) / dur, 1.5);
+      }
+      // siege towers: roll toward the enemy capital along the flow field (so they route
+      // around walls/houses instead of bulldozing through), then stop at the wall, drop
+      // the drawbridge, and punch a breach the assault can pour through.
+      const xfE = arena.transforms, STE = arena.XF_STRIDE;
+      for (const tw of engines.towers) {
+        if (tw.dropped) continue;
+        const o = tw.h * STE, rx = xfE[o], rz = xfE[o + 2];
+        let cap = null, cd = Infinity; // nearest enemy capital (skip solid towers)
+        for (const f of teamForts[1 - tw.team]) if (!f.tower) { const dd = Math.hypot(f.cx - rx, f.cz - rz); if (dd < cd) { cd = dd; cap = f; } }
+        if (cap && cd < cap.hs + 5) { // reached the wall: drop + breach just ahead
+          arena.towerDrive(tw.id, 0, 0);
+          arena.towerDrop(tw.id);
+          arena.breach(rx + ((cap.cx - rx) / cd) * 4, 1, rz + ((cap.cz - rz) / cd) * 4, 7);
+          events.push(['note', `${teamName(tw.team)} siege tower breaches the wall!`]);
+          tw.dropped = true;
+          continue;
+        }
+        const dir = nav[tw.team].sample(rx, rz);
+        if (dir) arena.towerDrive(tw.id, dir.x * 4, dir.z * 4);
+        else if (cap) arena.towerDrive(tw.id, ((cap.cx - rx) / cd) * 4, ((cap.cz - rz) / cd) * 4);
       }
     }
     // physics contacts: boulders plowing through crowds, fire pots detonating on

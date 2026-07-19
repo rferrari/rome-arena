@@ -63,6 +63,8 @@ static void write_transforms(void); // defined after arena_step
 static void do_breach(float x, float y, float z, float r); // boulder-blasts standing walls to rubble
 static void treb_step(void); // trebuchet arm state machines (defined with the engines)
 static int g_trebCount;     // live trebuchets (definition with the engine code)
+static int g_towerCount;    // live siege towers (definition with the engine code)
+void arena_set_velocity(int h, float vx, float vz); // defined with the ram; used by the tower
 
 // ---- jointed ragdoll pool (real box3d Humans, spawned on death, capped) ----
 #define RAGDOLL_MAX 128
@@ -145,6 +147,7 @@ void arena_reset(int seed, int maxBodies) {
   for (int i = 0; i < RAGDOLL_MAX; i++) g_rag[i].isSpawned = false;
   g_ragNext = 0; g_ragTime = 0.0f; g_renderCount = 0;
   g_trebCount = 0; // engines died with the old world too
+  g_towerCount = 0;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -550,6 +553,101 @@ static void treb_step(void) {
     }
   }
 }
+
+// Siege tower: a tall wheeled tower (dynamic, upright-locked, driven by JS) with a
+// drawbridge plank on a REVOLUTE JOINT at its top front. The bridge is held raised
+// (vertical) until arena_tower_drop() swings it down flat over the wall. State:
+// 0 rolling/raised -> 1 dropping.
+#define TOWER_MAX 8
+typedef struct { int handle; b3JointId hinge; int state; } Tower;
+static Tower g_tower[TOWER_MAX]; // g_towerCount declared with the top globals
+
+EMSCRIPTEN_KEEPALIVE
+int arena_add_tower(float x, float z, float yaw) {
+  if (g_towerCount >= TOWER_MAX) return -1;
+  const b3Quat yawQ = b3MakeQuatFromAxisAngle((b3Vec3){ 0, 1, 0 }, yaw);
+
+  // tower body: tall box, angular-locked so it stays upright and only translates
+  b3BodyDef bd = b3DefaultBodyDef();
+  bd.type = b3_dynamicBody;
+  bd.position = (b3Pos){ x, 4.0f, z };
+  bd.rotation = yawQ;
+  bd.motionLocks.angularX = true; bd.motionLocks.angularY = true; bd.motionLocks.angularZ = true;
+  bd.linearDamping = 1.0f;
+  bd.userData = (void*)(intptr_t) g_count;
+  b3BodyId body = b3CreateBody(g_world, &bd);
+  b3BoxHull bh = b3MakeBoxHull(1.6f, 4.0f, 1.6f);
+  b3ShapeDef sd = b3DefaultShapeDef();
+  sd.density = 6.0f;
+  // collides only with walls/ground — it rolls THROUGH the crowd to reach the wall
+  // instead of stalling against a wall of soldiers (JS stops it at the target)
+  sd.filter.categoryBits = CAT_BOULDER;
+  sd.filter.maskBits = CAT_STATIC | CAT_BRICK;
+  b3CreateHullShape(body, &sd, &bh.base);
+  int handle = push_body_ext(body, KIND_ENGINE, 1.6f, 4.0f, 1.6f);
+
+  // drawbridge plank, long axis = local Z, pivoted at its butt (local Z = -2), created
+  // RAISED (rotated up about the hinge X axis so it stands vertical against the front)
+  const float RAISED = -1.5f;
+  const b3Quat brQ = b3MulQuat(yawQ, b3MakeQuatFromAxisAngle((b3Vec3){ 1, 0, 0 }, RAISED));
+  const b3Vec3 hinge = b3RotateVector(yawQ, (b3Vec3){ 0, 4.0f, 1.6f }); // tower top-front, local
+  const b3Vec3 toC = b3RotateVector(brQ, (b3Vec3){ 0, 0, 2.0f });        // butt -> plank centre
+  b3BodyDef pd = b3DefaultBodyDef();
+  pd.type = b3_dynamicBody;
+  pd.position = (b3Pos){ x + hinge.x + toC.x, 4.0f + hinge.y + toC.y, z + hinge.z + toC.z };
+  pd.rotation = brQ;
+  pd.userData = (void*)(intptr_t) g_count;
+  b3BodyId bridge = b3CreateBody(g_world, &pd);
+  b3BoxHull ph = b3MakeBoxHull(1.4f, 0.12f, 2.0f);
+  b3ShapeDef psd = b3DefaultShapeDef();
+  psd.density = 3.0f;
+  psd.filter.categoryBits = CAT_BOULDER;
+  psd.filter.maskBits = CAT_STATIC | CAT_BRICK;
+  b3CreateHullShape(bridge, &psd, &ph.base);
+  push_body_ext(bridge, KIND_ENGINE, 1.4f, 0.12f, 2.0f);
+
+  // hinge about local X (horizontal, perpendicular to travel); rotY(90°) maps the
+  // joint z-axis onto local X, same trick as the trebuchet arm
+  const b3Quat qF = b3MakeQuatFromAxisAngle((b3Vec3){ 0, 1, 0 }, 0.5f * PI_F);
+  b3RevoluteJointDef jd = b3DefaultRevoluteJointDef();
+  jd.base.bodyIdA = body;
+  jd.base.bodyIdB = bridge;
+  jd.base.localFrameA = (b3Transform){ { 0, 4.0f, 1.6f }, qF };
+  jd.base.localFrameB = (b3Transform){ { 0, 0, -2.0f }, qF };
+  jd.enableLimit = true;
+  jd.lowerAngle = RAISED - 0.05f;  // up
+  jd.upperAngle = 0.05f;           // flat forward
+  jd.enableMotor = true;
+  jd.maxMotorTorque = 4000.0f;
+  jd.motorSpeed = -1.0f;           // hold up against the lower limit
+  b3JointId hinge_j = b3CreateRevoluteJoint(g_world, &jd);
+
+  Tower* t = &g_tower[g_towerCount];
+  t->handle = handle; t->hinge = hinge_j; t->state = 0;
+  return g_towerCount++;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int arena_tower_handle(int i) { return (i < 0 || i >= g_towerCount) ? -1 : g_tower[i].handle; }
+
+// drive the tower body horizontally (JS steers it toward the wall)
+EMSCRIPTEN_KEEPALIVE
+void arena_tower_drive(int i, float vx, float vz) {
+  if (i < 0 || i >= g_towerCount) return;
+  arena_set_velocity(g_tower[i].handle, vx, vz);
+}
+
+// release the drawbridge: swing it down flat over the wall
+EMSCRIPTEN_KEEPALIVE
+void arena_tower_drop(int i) {
+  if (i < 0 || i >= g_towerCount || g_tower[i].state != 0) return;
+  g_tower[i].state = 1;
+  b3RevoluteJoint_SetMotorSpeed(g_tower[i].hinge, 2.5f); // swing toward the flat (upper) limit
+}
+
+// open a breach in standing walls at a world point (siege-tower assault, exposed do_breach)
+EMSCRIPTEN_KEEPALIVE
+void arena_breach(float x, float y, float z, float r) { do_breach(x, y, z, r); }
 
 // Battering ram: a very heavy sled that the crew drives into the gate; wall bricks
 // it slams into are breached (handled in the contact drain).

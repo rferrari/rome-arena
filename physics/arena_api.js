@@ -37,6 +37,11 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     trebuchetPoll: c('arena_trebuchet_poll', 'number', ['number']),
     addRam: c('arena_add_ram', 'number', ['number', 'number']),
     setVelocity: c('arena_set_velocity', null, ['number', 'number', 'number']),
+    addTower: c('arena_add_tower', 'number', ['number', 'number', 'number']),
+    towerHandle: c('arena_tower_handle', 'number', ['number']),
+    towerDrive: c('arena_tower_drive', null, ['number', 'number', 'number']),
+    towerDrop: c('arena_tower_drop', null, ['number']),
+    breach: c('arena_breach', null, ['number', 'number', 'number', 'number']),
     spawnRagdoll: c('arena_spawn_ragdoll', null, ['number', 'number', 'number', 'number', 'number', 'number']),
     setRagdollParams: c('arena_set_ragdoll_params', null, ['number', 'number']),
     renderCount: c('arena_render_count', 'number', []),
@@ -91,6 +96,14 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     // battering ram: heavy sled that breaches wall bricks it slams into
     addRam: (x, z) => fn.addRam(x, z),
     setVelocity: (h, vx, vz) => fn.setVelocity(h, vx, vz),
+    // siege tower: rolls to the wall (towerDrive) then drops a jointed drawbridge
+    // (towerDrop); handle() reads its body transform for range checks.
+    addTower: (x, z, yaw) => fn.addTower(x, z, yaw),
+    towerHandle: (i) => fn.towerHandle(i),
+    towerDrive: (i, vx, vz) => fn.towerDrive(i, vx, vz),
+    towerDrop: (i) => fn.towerDrop(i),
+    // open a wall breach at a world point (siege-tower assault)
+    breach: (x, y, z, r) => fn.breach(x, y, z, r),
     // spawn a jointed ragdoll (pooled/capped) at (x,y,z) flung at (vx,vy,vz).
     spawnRagdoll: (x, y, z, vx, vy, vz) => fn.spawnRagdoll(x, y, z, vx, vy, vz),
     setRagdollParams: (cap, life) => fn.setRagdollParams(cap, life),

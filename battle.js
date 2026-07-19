@@ -47,6 +47,13 @@ mid.position.y = 0.02;
 scene.add(mid);
 
 const TEAM_COLORS = [new THREE.Color(0xd23c3c), new THREE.Color(0x3c64d2)];
+// per-unit-type shades so types read apart from above, while the team stays obvious
+// (Red = warm family, Blue = cool family). Legion is the pure team colour.
+const TYPE_COLORS = [
+  { legion: 0xe03434, spear: 0xff7a30, pike: 0x8a1e1e, archer: 0xffb0cc, cavalry: 0xc01f66, catapult: 0x704028 },
+  { legion: 0x3c7ae0, spear: 0x2ec6e0, pike: 0x18287e, archer: 0xa8d4ff, cavalry: 0x7040e0, catapult: 0x2c4a6e },
+].map((o) => { const m = {}; for (const k in o) m[k] = new THREE.Color(o[k]); return m; });
+const unitColor = (team, type) => (TYPE_COLORS[team] && TYPE_COLORS[team][type]) || TEAM_COLORS[team];
 const DEAD_COLOR = new THREE.Color(0x4a4a4a);
 const WHITE = new THREE.Color(0xffffff);
 
@@ -311,7 +318,8 @@ function buildRenderers() {
   };
   hTorso = mk(gTorso, nS); hHead = mk(gHead, nS); hLeg = mk(gLeg, nS * 2); hArm = mk(gArm, nS * 2);
   for (let i = 0; i < nS; i++) {
-    const col = TEAM_COLORS[meta.units[soldierUnitIdx[i]].team];
+    const mu = meta.units[soldierUnitIdx[i]];
+    const col = unitColor(mu.team, mu.type);
     hTorso.setColorAt(i, col); hHead.setColorAt(i, col);
     hLeg.setColorAt(i * 2, col); hLeg.setColorAt(i * 2 + 1, col);
     hArm.setColorAt(i * 2, col); hArm.setColorAt(i * 2 + 1, col);
@@ -813,8 +821,8 @@ function updateInstances(dt) {
     const key = (rs.broken ? 4 : 0) | (selected.has(j) ? 8 : 0);
     if (colorKey[i] !== key) {
       colorKey[i] = key;
-      const base = TEAM_COLORS[u.team];
-      // routed = dimmed team colour (still clearly Red/Blue, just faded); selected = brightened
+      const base = unitColor(u.team, u.type); // per-type shade within the team family
+      // routed = dimmed (still recognisably the unit's colour); selected = brightened
       const col = rs.broken ? base.clone().multiplyScalar(0.42) : selected.has(j) ? base.clone().lerp(WHITE, 0.45) : base;
       hTorso.setColorAt(i, col); hHead.setColorAt(i, col);
       hLeg.setColorAt(i * 2, col); hLeg.setColorAt(i * 2 + 1, col);
@@ -969,8 +977,11 @@ function updateHud() {
   const props = lastBricks + lastRags + lastWood;
   const fpsN = Math.round(fps);
   const fpsCol = fpsN >= 50 ? '#6d6' : fpsN >= 30 ? '#dd6' : '#e66';
+  const legTeam = you && !you.spectator ? you.team : 0; // colour legend in the viewer's family
+  const legend = ['legion', 'spear', 'pike', 'archer', 'cavalry', 'catapult']
+    .map((t) => `<span style="color:#${unitColor(legTeam, t).getHexString()}">${t}</span>`).join(' ');
   hud.innerHTML = `<b style="color:#e66">Red ${countsData[0]}</b> vs <b style="color:#68f">Blue ${countsData[1]}</b> — ${modeLabel}${selLine}` +
-    `<br><span style="color:${fpsCol}">${fpsN} fps</span> · ${alive} soldiers · ${props} props` +
+    `<br><span style="color:${fpsCol}">${fpsN} fps</span> · ${alive} soldiers · ${props} props · ${legend}` +
     strikeLine() +
     `<br>LMB drag: select · RMB drag: form line · RMB click: move · T: testudo/phalanx · [ ]: width · WASD/←→ pan · ↑↓ zoom`;
 

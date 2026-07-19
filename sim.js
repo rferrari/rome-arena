@@ -150,8 +150,9 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     teamForts = [[], []];
     for (let t = 0; t < 2; t++) {
       const dir = t === 0 ? 1 : -1, facing = t === 0 ? Math.PI : 0;
-      // forward watchtowers (both cities)
-      for (const tx of [-58, 58]) {
+      // forward watchtowers near the CENTRE (both cities) — the field borders stay
+      // open, so cavalry can sweep the flanks around the buildings
+      for (const tx of [-30, 30]) {
         arena.buildFort(tx, dir * 12, 5, F.courses, -dir);
         teamForts[t].push({ cx: tx, cz: dir * 12, hs: 5, courses: F.courses });
       }

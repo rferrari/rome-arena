@@ -196,7 +196,7 @@ async function startSolo() {
   const arena = await createArena({ maxBodies: CONFIG.maxBodies }); // browser-side box3d world for solo play
   mode = 'solo';
   you = { team: 0, slot: -1 }; // -1 = owns all of team 0
-  sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena, fort: location.hash.includes('fort') });
+  sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena, fort: location.hash.includes('fort'), dom: location.hash.includes('dom') });
   for (let p = 0; p < 2; p++) sim.ai.delete(`0:${p}`);
   buildMeta(sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, n: u.n0 })));
   setupSoloReaders();
@@ -234,6 +234,8 @@ function connect() {
       } else if (m.type === 'ev') {
         for (const ev of m.e) handleEvent(ev);
         statsData = m.stats; countsData = m.counts || countsData;
+        if (m.zones) zonesData = m.zones;
+        if (m.tickets) ticketsData = m.tickets;
         if (m.winner !== null && m.winner !== undefined) winner = m.winner;
       }
     } else if (mode === 'net') decodeSnapshot(e.data);
@@ -399,6 +401,37 @@ function setLeaderAnim(L, name) {
     }).catch((e) => console.warn('leader model failed to load:', LEADER_MODEL[team], e));
   }
 })();
+
+// ---------------- domination: capture-zone rings + ticket HUD ----------------
+let zonesData = null, ticketsData = null;
+const ZONE_COLORS = [0xd23c3c, 0x3c64d2]; // holder red/blue; gray when unheld
+const zoneRings = [];
+const domEl = document.createElement('div');
+domEl.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);font:bold 20px system-ui;text-shadow:0 2px 5px #000;display:none;color:#ddd;pointer-events:none';
+document.body.appendChild(domEl);
+function updateDom() {
+  const zs = mode === 'solo' ? (sim && sim.zones) : zonesData;
+  const tk = mode === 'solo' ? (sim && sim.tickets) : ticketsData;
+  if (!zs) { domEl.style.display = 'none'; for (const r of zoneRings) r.visible = false; return; }
+  while (zoneRings.length < zs.length) {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(zs[zoneRings.length].r - 1, zs[zoneRings.length].r, 48),
+      new THREE.MeshBasicMaterial({ color: 0x999999, transparent: true, opacity: 0.75, side: THREE.DoubleSide })
+    );
+    ring.rotation.x = -Math.PI / 2; ring.position.y = 0.1;
+    scene.add(ring); zoneRings.push(ring);
+  }
+  zs.forEach((z, i) => {
+    const r = zoneRings[i];
+    r.visible = true;
+    r.position.set(z.x, 0.1, z.z);
+    r.material.color.setHex(z.holder === -1 ? 0x999999 : ZONE_COLORS[z.holder]);
+  });
+  if (tk) {
+    domEl.style.display = 'block';
+    domEl.innerHTML = `<span style="color:#e88">⚑ Red ${tk[0]}</span> &nbsp;·&nbsp; <span style="color:#8ae">${tk[1]} Blue ⚑</span>`;
+  }
+}
 
 let lastBricks = 0, lastRags = 0;
 function updateProps() {
@@ -890,6 +923,7 @@ function frame(now) {
   if (mode) {
     updateInstances(dt);
     updateProps();
+    updateDom();
     updateProjectiles(dt);
     updateParticles(dt);
     hudT -= dt;

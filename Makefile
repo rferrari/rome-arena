@@ -12,6 +12,9 @@ start: ## run the battle server; TIER=low|mid|high|ultra, FORT=1 adds castles
 stress: ## max-scale stress test: ultra tier + castles
 	bun server.js --port $(PORT) --tier ultra --seed $(SEED) --fort 1
 
+dom: ## domination: hold 3 zones to bleed enemy tickets (combine with FORT=1)
+	bun server.js --port $(PORT) --tier $(TIER) --dom 1 --fort $(FORT) --seed $(SEED)
+
 test: ## headless sim smoke test — asserts combat mechanics fire
 	bun test_sim.js
 
@@ -30,4 +33,4 @@ wasm-fort: ## build a castle and bombard it; assert masonry is stable then caves
 help:
 	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/ —/'
 
-.PHONY: start stress test wasm wasm-test wasm-bench wasm-fort help
+.PHONY: start stress dom test wasm wasm-test wasm-bench wasm-fort help

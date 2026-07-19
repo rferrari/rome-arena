@@ -42,7 +42,7 @@ function mulberry32(seed) {
 
 export const SUBSTEPS = CONFIG.subSteps; // box3d solver sub-steps per tick
 
-export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = {}) {
+export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom = false } = {}) {
   if (!arena) throw new Error('createSim requires a physics arena (see physics/arena_api.js)');
   arena.reset(seed >>> 0);            // fresh box3d world + body tables
   arena.createGround(FIELD_W, FIELD_D); // static floor + perimeter walls
@@ -161,6 +161,33 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     nav = [createFlowField(FIELD_W, FIELD_D, F.navCell), createFlowField(FIELD_W, FIELD_D, F.navCell)];
     sim.teamForts = teamForts;
     recomputeNav();
+  }
+
+  // Domination: three capture zones across the midfield. Holding a zone (more live
+  // soldiers inside than the enemy) bleeds the enemy's tickets 1/zone/sec; a team
+  // at 0 tickets loses. Gives commanders a reason to split and contest ground.
+  let zones = null, tickets = null, domT = 0;
+  if (dom) {
+    zones = [{ x: -55, z: 0, r: 12, holder: -1 }, { x: 0, z: 0, r: 12, holder: -1 }, { x: 55, z: 0, r: 12, holder: -1 }];
+    tickets = [400, 400];
+    sim.zones = zones; sim.tickets = tickets;
+  }
+  function domStep() {
+    for (const z of zones) {
+      let c0 = 0, c1 = 0;
+      const r2 = z.r * z.r;
+      for (const s of soldiers) {
+        if (s.state !== 0) continue;
+        if ((s.x - z.x) ** 2 + (s.z - z.z) ** 2 < r2) { if (s.unit.team === 0) c0++; else c1++; }
+      }
+      const h = c0 > c1 ? 0 : c1 > c0 ? 1 : -1; // tie/empty keeps the current holder
+      if (h !== -1 && h !== z.holder) { z.holder = h; events.push(['note', `${teamName(h)} captured a zone!`]); }
+      if (z.holder !== -1) tickets[1 - z.holder] = Math.max(0, tickets[1 - z.holder] - 1);
+    }
+    if (sim.winner === null) {
+      if (tickets[0] === 0) { sim.winner = 1; events.push(['over', 1]); }
+      else if (tickets[1] === 0) { sim.winner = 0; events.push(['over', 0]); }
+    }
   }
 
   // nav[t] = flow field for team t's attackers toward EVERY enemy castle (multi-source,
@@ -375,6 +402,8 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
 
     // refresh pathfinding periodically so wall breaches open new routes
     if (nav) { navT -= dt; if (navT <= 0) { navT = 1; recomputeNav(); } }
+    // domination scoring at 1 Hz
+    if (zones) { domT -= dt; if (domT <= 0) { domT = 1; domStep(); } }
 
     // Decide each soldier's desired velocity (+ melee) from last tick's positions,
     // writing intents into the shared buffer. box3d then integrates movement AND
@@ -585,6 +614,21 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
             u.facing = facing;
           }
           continue;
+        }
+        // domination: melee units march on the nearest zone we don't hold; combat
+        // still takes over locally via per-soldier seek once enemies are close.
+        if (zones && !u.type.ranged) {
+          let zb = null, zd = Infinity;
+          for (const z of zones) {
+            if (z.holder === u.team) continue;
+            const d = (z.x - u.cx) ** 2 + (z.z - u.cz) ** 2;
+            if (d < zd) { zd = d; zb = z; }
+          }
+          if (zb) {
+            u.ax = zb.x + (rng() - 0.5) * 10; u.az = zb.z + (rng() - 0.5) * 10;
+            u.facing = Math.atan2(zb.x - u.cx, zb.z - u.cz);
+            continue;
+          }
         }
         let best = null, bd = Infinity;
         for (const e of units) {

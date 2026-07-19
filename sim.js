@@ -123,11 +123,18 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     const blockW = Math.min(46, (FIELD_W - 10) / players[team]);
     for (let p = 0; p < players[team]; p++) {
       const bx = (p + 0.5 - players[team] / 2) * blockW;
+      // Each player is a distinct combined-arms BATTLE GROUP, not part of one flat
+      // line: units cluster within ~62% of the block (leaving lanes between groups),
+      // and alternate groups sit ~11m deeper (checkerboard) so the army engages in
+      // staggered waves and cavalry can sweep the gaps — less of a single-wave rush.
+      const zg = (p % 2 ? 11 : 0) * dir;                 // checkerboard depth stagger
+      const fw = (blockW * 0.62) / COMP_FRONT.length;    // tighter spread -> gaps between groups
+      const bw = (blockW * 0.62) / COMP_BACK.length;
       COMP_FRONT.forEach((t, i) =>
-        makeUnit(team, p, t, bx + (i + 0.5 - COMP_FRONT.length / 2) * (blockW / COMP_FRONT.length), dir * zM, facing));
+        makeUnit(team, p, t, bx + (i + 0.5 - COMP_FRONT.length / 2) * fw, dir * zM + zg, facing));
       COMP_BACK.forEach((t, i) =>
-        makeUnit(team, p, t, bx + (i + 0.5 - COMP_BACK.length / 2) * (blockW / COMP_BACK.length), dir * zB, facing));
-      for (let k = 0; k < nCat; k++) makeUnit(team, p, 'catapult', bx + (k - (nCat - 1) / 2) * 7, dir * zC, facing);
+        makeUnit(team, p, t, bx + (i + 0.5 - COMP_BACK.length / 2) * bw, dir * zB + zg, facing));
+      for (let k = 0; k < nCat; k++) makeUnit(team, p, 'catapult', bx + (k - (nCat - 1) / 2) * 7, dir * zC + zg, facing);
       sim.ai.add(`${team}:${p}`); // owners claim their slot; unclaimed = AI
     }
   }

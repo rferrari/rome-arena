@@ -673,6 +673,15 @@ const orderArrows = Array.from({ length: 40 }, () => {
   scene.add(a);
   return a;
 });
+// yellow ground rings under selected units (works for GLB/VRM and capsules alike)
+const selRingGeo = new THREE.RingGeometry(4.5, 6, 32);
+const selRingMat = new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false });
+const selRings = Array.from({ length: 60 }, () => {
+  const r = new THREE.Mesh(selRingGeo, selRingMat);
+  r.rotation.x = -Math.PI / 2; r.position.y = 0.12; r.visible = false; r.frustumCulled = false;
+  scene.add(r);
+  return r;
+});
 
 // ---------------- particles ----------------
 const POOL = 3000;
@@ -1013,11 +1022,13 @@ function updateInstances(dt) {
     mesh.rotation.y = Math.atan2(ud.ax - c.x, ud.az - c.z) || mesh.rotation.y;
   }
 
-  // destination arrows for selected units
-  let ai = 0;
+  // yellow selection rings + destination arrows for selected units
+  let ai = 0, ri = 0;
   for (const j of selected) {
     const c = unitCentroids[j], ud = readUnit(j);
-    if (!c || !c.n || !ud || ai >= orderArrows.length) continue;
+    if (!c || !c.n) continue;
+    if (ri < selRings.length) { const r = selRings[ri++]; r.visible = true; r.position.set(c.x, 0.12, c.z); }
+    if (!ud || ai >= orderArrows.length) continue;
     const dx = ud.ax - c.x, dz = ud.az - c.z, d = Math.hypot(dx, dz);
     if (d < 3) continue;
     const a = orderArrows[ai++];
@@ -1027,6 +1038,7 @@ function updateInstances(dt) {
     a.setLength(d, Math.min(3, d * 0.3), 1.6);
   }
   for (; ai < orderArrows.length; ai++) orderArrows[ai].visible = false;
+  for (; ri < selRings.length; ri++) selRings[ri].visible = false;
 }
 
 function updateProjectiles(dt) {

@@ -5,7 +5,7 @@
 import { CONFIG } from './physics/config.js';
 import { createFlowField } from './physics/flowfield.js';
 
-export const FIELD_W = 300, FIELD_D = 200; // big field: wide flanks + deep approach
+export const FIELD_W = 300, FIELD_D = 240; // big field: wide flanks + deep approach (cities fit within ±120)
 export const SPACING = 1.3;
 
 export const TYPES = {

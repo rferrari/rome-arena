@@ -82,16 +82,18 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, ctf
     return out;
   }
 
-  function makeUnit(team, slot, typeKey, ax, az, facing, count = TYPES[typeKey].n) {
+  // count: explicit for CTF squads; otherwise scaled by the tier's unitScale
+  function makeUnit(team, slot, typeKey, ax, az, facing, count) {
     const type = TYPES[typeKey];
+    const n = count ?? (typeKey === 'catapult' ? type.n : Math.max(4, Math.round(type.n * (CONFIG.unitScale || 1))));
     const u = {
-      id: units.length, team, slot, typeKey, type, n0: count, // n0 = actual spawned count
-      ax, az, facing, files: Math.min(type.files, count), stance: 0,
-      morale: 100, broken: false, alive: count,
+      id: units.length, team, slot, typeKey, type, n0: n,
+      ax, az, facing, files: Math.min(type.files, n), stance: 0,
+      morale: 100, broken: false, alive: n,
       cx: ax, cz: az, catCd: CAT_CD * rng(), soldiers: [],
     };
     const p = { x: 0, z: 0 };
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < n; i++) {
       slotPos(u, i, p);
       const s = {
         id: soldiers.length, unit: u, slot: i,
@@ -133,7 +135,8 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, ctf
   // deployment: per player slot, 4 melee units front, archer+cavalry behind, catapult
   // rear. In fort mode armies form up further forward so each team's castle sits
   // behind them at ±backZ.
-  const zM = fort ? 30 : 42, zB = fort ? 38 : 52, zC = fort ? 46 : 60;
+  const zM = fort ? 26 : 42, zB = fort ? 34 : 52, zC = fort ? 42 : 60;
+  const nCat = fort ? 3 : 1; // a battery of catapults in siege mode
   for (let team = 0; team < 2; team++) {
     const dir = team === 0 ? 1 : -1, facing = team === 0 ? Math.PI : 0;
     const blockW = Math.min(46, (FIELD_W - 10) / players[team]);
@@ -143,39 +146,41 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, ctf
         makeUnit(team, p, t, bx + (i + 0.5 - COMP_FRONT.length / 2) * (blockW / COMP_FRONT.length), dir * zM, facing));
       COMP_BACK.forEach((t, i) =>
         makeUnit(team, p, t, bx + (i + 0.5 - COMP_BACK.length / 2) * (blockW / COMP_BACK.length), dir * zB, facing));
-      makeUnit(team, p, 'catapult', bx, dir * zC, facing);
+      for (let k = 0; k < nCat; k++) makeUnit(team, p, 'catapult', bx + (k - (nCat - 1) / 2) * 7, dir * zC, facing);
       sim.ai.add(`${team}:${p}`); // owners claim their slot; unclaimed = AI
     }
   }
   }
 
-  // Two castles (one per team at its backline), gates facing the enemy. Each team's
-  // stance (CONFIG.fort.stance) decides whether it holds its own fort or storms the
-  // enemy's; soldiers path there via a flow field. Default off so open-field
-  // test_sim is unaffected. Bricks are pure physics — no per-brick JS logic.
-  let nav = null, fortCenter = null, teamStance = null, navT = 0;
+  // THREE castles per team in a triangle at its backline, gates facing the enemy.
+  // Each team's stance decides whether it holds its own forts ('defend') or storms
+  // the enemy's ('attack', pathing to the NEAREST enemy castle via a flow field).
+  // Default off so open-field test_sim is unaffected.
+  let nav = null, teamForts = null, teamStance = null, navT = 0;
   if (fort) {
-    const F = CONFIG.fort;
-    fortCenter = [[0, F.backZ], [0, -F.backZ]];   // team 0 at +z, team 1 at -z
+    const F = CONFIG.fort, hs = F.halfSize, bz = F.backZ;
     teamStance = F.stance;
-    arena.buildFort(0, F.backZ, F.halfSize, F.courses, -1);  // gate faces -z (toward centre)
-    arena.buildFort(0, -F.backZ, F.halfSize, F.courses, +1); // gate faces +z (toward centre)
-    arena.sync(); // fill the transform buffer so the lobby/init shows the fresh forts
+    // three castles in a row along each team's backline (behind its army), gates
+    // facing the enemy; kept clear of the deployment zone so nothing spawns inside.
+    const layout = (dir) => [-48, 0, 48].map((cx) => ({ cx, cz: dir * bz, gd: -dir }));
+    teamForts = [layout(1), layout(-1)];
+    for (let t = 0; t < 2; t++) for (const f of teamForts[t]) arena.buildFort(f.cx, f.cz, hs, F.courses, f.gd);
+    arena.sync();
     nav = [createFlowField(FIELD_W, FIELD_D, F.navCell), createFlowField(FIELD_W, FIELD_D, F.navCell)];
-    sim.fortCenter = fortCenter;
+    sim.teamForts = teamForts;
     recomputeNav();
   }
 
-  // Rebuild each fort's flow field from the currently standing bricks (goal = just
-  // inside that fort's gate). Recomputed periodically so boulder breaches open paths.
+  // nav[t] = flow field for team t's attackers toward EVERY enemy castle (multi-source,
+  // so each cell points to the nearest one). Blocks standing walls; breached rubble
+  // (kind 6) opens a path. Recomputed periodically so breaches reroute the assault.
   function recomputeNav() {
     const xf = arena.transforms, ST = arena.XF_STRIDE, n = arena.count, hs = CONFIG.fort.halfSize;
-    for (let f = 0; f < 2; f++) {
-      nav[f].clearBlocked();
-      // block only standing walls (kind 2); breached rubble (kind 6) opens a path
-      for (let h = 0; h < n; h++) { const b = h * ST; if (xf[b + 7] === 2) nav[f].blockWorld(xf[b], xf[b + 2]); }
-      const fz = fortCenter[f][1], sgn = fz >= 0 ? 1 : -1;
-      nav[f].compute(0, fz - sgn * (hs - 2)); // goal = courtyard just inside the gate
+    for (let t = 0; t < 2; t++) {
+      nav[t].clearBlocked();
+      for (let h = 0; h < n; h++) { const b = h * ST; if (xf[b + 7] === 2) nav[t].blockWorld(xf[b], xf[b + 2]); }
+      const goals = teamForts[1 - t].map((f) => ({ x: f.cx, z: f.cz - (f.cz >= 0 ? 1 : -1) * (hs - 2) })); // just inside each gate
+      nav[t].compute(goals);
     }
   }
   function moveToSlot(s, u, speedMult, dt) {
@@ -439,7 +444,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, ctf
         // and through the gate, toward the enemy fort). Defenders hold their formed
         // line in front of their own castle rather than piling inside it.
         if (nav && teamStance[u.team] === 'attack' && T !== TYPES.catapult) {
-          const dir = nav[1 - u.team].sample(s.x, s.z); // enemy fort's field
+          const dir = nav[u.team].sample(s.x, s.z); // this team's field toward the enemy castles
           if (dir) { s.face = Math.atan2(dir.x, dir.z); setVel(s, s.x + dir.x, s.z + dir.z, s.speed * speedMult, dt); }
           else moveToSlot(s, u, speedMult, dt); // reached the objective — brawl in formation
         } else moveToSlot(s, u, speedMult, dt);
@@ -491,15 +496,28 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, ctf
       if (u.typeKey !== 'catapult' || u.alive <= 0 || u.broken) continue;
       u.catCd -= dt;
       if (u.catCd <= 0 && Math.hypot(u.cx - u.ax, u.cz - u.az) < 3) {
-        let best = null, bd = CAT_RANGE;
-        for (const s of soldiers) {
-          if (s.unit.team === u.team || s.state !== 0) continue;
-          const d = Math.hypot(s.x - u.ax, s.z - u.az);
-          if (d > CAT_MIN_RANGE && d < bd) { bd = d; best = s; }
+        // priority 1: bombard the enemy castle if it's in range (spread shots across
+        // its footprint to smash walls). priority 2 (fort out of range): the army.
+        let tx, tz, bd = 0;
+        // nearest ENEMY castle to this catapult
+        let efc = null, fd = Infinity;
+        if (teamForts) for (const f of teamForts[1 - u.team]) { const d = Math.hypot(f.cx - u.ax, f.cz - u.az); if (d < fd) { fd = d; efc = f; } }
+        if (efc && fd > CAT_MIN_RANGE && fd < CAT_RANGE) {
+          const hs = CONFIG.fort.halfSize;
+          tx = efc.cx + (rng() - 0.5) * 2 * hs;
+          tz = efc.cz + (rng() - 0.5) * 2 * hs;
+          bd = fd;
+        } else {
+          let best = null; bd = CAT_RANGE;
+          for (const s of soldiers) {
+            if (s.unit.team === u.team || s.state !== 0) continue;
+            const d = Math.hypot(s.x - u.ax, s.z - u.az);
+            if (d > CAT_MIN_RANGE && d < bd) { bd = d; best = s; }
+          }
+          if (best) { tx = best.x + (rng() - 0.5) * 6; tz = best.z + (rng() - 0.5) * 6; }
         }
-        if (best) {
+        if (tx !== undefined) {
           u.catCd = CAT_CD;
-          const tx = best.x + (rng() - 0.5) * 6, tz = best.z + (rng() - 0.5) * 6;
           const dur = 1.2 + bd / 40;
           // launch a REAL rock on a ballistic arc that lands at (tx,0,tz) in `dur`s
           const vx = (tx - u.ax) / dur, vz = (tz - u.az) / dur;
@@ -507,7 +525,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, ctf
           const h = arena.addBoulder(u.ax, BOULDER_LAUNCH_Y, u.az, vx, vy, vz, BOULDER_R);
           boulders.push({ h, born: sim.time, hits: 0 });
           stats.boulders.fired++;
-          events.push(['shot', u.ax, u.az, tx, tz, dur]); // cosmetic arc (real render in Phase 6)
+          events.push(['shot', u.ax, u.az, tx, tz, dur]); // cosmetic arc for the client
         }
       }
     }

@@ -3,6 +3,7 @@
 // using the exact same sim.js module.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { createSim, TYPES, FIELD_W, FIELD_D, SPACING } from './sim.js';
 import { createArena } from './physics/arena_api.js';
@@ -306,10 +307,12 @@ function buildRenderers() {
   soldierUnitIdx.length = 0;
   meta.units.forEach((u, j) => { for (let i = 0; i < u.n; i++) soldierUnitIdx[u.start + i] = j; });
 
-  // pick one leader soldier per team (centre of that team's first melee unit)
-  leaderIndex[0] = leaderIndex[1] = -1;
+  // assign the first VRM_CAP soldiers of VRM_TYPE per team to VRM avatar slots
+  vrmSlot.clear();
+  const vcount = [0, 0];
   for (const u of meta.units) {
-    if (leaderIndex[u.team] < 0 && u.type !== 'catapult') leaderIndex[u.team] = u.start + Math.floor(u.n / 2);
+    if (u.type !== VRM_TYPE) continue;
+    for (let i = 0; i < u.n && vcount[u.team] < VRM_CAP; i++) vrmSlot.set(u.start + i, { team: u.team, k: vcount[u.team]++ });
   }
 
   const nS = meta.nS;
@@ -396,48 +399,69 @@ for (const m of [brickMesh, ragdollMesh, woodMesh]) {
   m.castShadow = false;
   scene.add(m);
 }
-// ---------------- champion leaders (one VRM avatar per team) ----------------
-// A high-quality VRM per side (rest of the army stays instanced). VRMs carry no
-// animation clips, so we drive a simple procedural gait on the humanoid bones.
-const LEADER_MODEL = ['./assets/vrm/crusader.vrm', './assets/vrm/guard.vrm'];
-const leaders = [null, null];         // { vrm, phase, prevX, prevZ }
-const leaderIndex = [-1, -1];         // soldier instance index rendered as the leader
-const leaderState = [null, null];     // {x, z, face, state} filled each frame
-(function loadLeaders() {
-  if (CONFIG.heroesPerTeam <= 0) return; // leaders disabled
+// ---------------- VRM army (one unit type rendered as VRM avatars) ----------------
+// A high-quality VRM per side; the chosen unit type is rendered as pooled VRM CLONES
+// (SkeletonUtils shares geometry/textures, so N clones ≈ 1 model's memory). Start
+// small via VRM_CAP and raise it. VRMs ship no clips, so a procedural gait rotates
+// humanoid bones relative to their rest pose. Everything else stays instanced.
+const VRM_MODEL = ['./assets/vrm/crusader.vrm', './assets/vrm/guard.vrm'];
+const VRM_TYPE = CONFIG.render.vrmType || 'legion';   // which unit type becomes VRM
+let VRM_CAP = CONFIG.render.vrmCap ?? 8;              // VRM avatars per team (start small)
+// gait bones: [humanoid name, local axis, direction, restOffset(rad)]
+const VRM_BONES = [
+  ['leftUpperLeg', 'x', 1, 0], ['rightUpperLeg', 'x', -1, 0],
+  ['leftLowerLeg', 'x', -1, 0], ['rightLowerLeg', 'x', 1, 0],
+  ['leftUpperArm', 'z', 1, 1.15], ['rightUpperArm', 'z', -1, -1.15],
+];
+const _AX = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
+const vrmPool = [[], []];              // team -> [ {scene, bones:{name:{node,rest,ax,dir,off}}, phase, prevX, prevZ} ]
+const vrmSlot = new Map();             // soldier index -> {team, k}
+const vrmState = [[], []];             // team -> [ {x,z,face,state,down,fighting} | null ]
+const _q = new THREE.Quaternion();
+(function loadVRMArmy() {
   const loader = new GLTFLoader();
   loader.register((parser) => new VRMLoaderPlugin(parser));
   for (let team = 0; team < 2; team++) {
-    loader.loadAsync(LEADER_MODEL[team]).then((gltf) => {
+    loader.loadAsync(VRM_MODEL[team]).then((gltf) => {
       const vrm = gltf.userData.vrm;
-      VRMUtils.rotateVRM0(vrm); // make VRM0 rigs face +Z like VRM1
+      VRMUtils.rotateVRM0(vrm);                          // VRM0 rigs -> face +Z
       VRMUtils.removeUnnecessaryJoints(vrm.scene);
-      vrm.scene.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
-      vrm.scene.scale.setScalar(1.9); // stand a bit taller than the rank & file
-      vrm.scene.visible = false;
-      scene.add(vrm.scene);
-      leaders[team] = { vrm, phase: 0, prevX: 0, prevZ: 0 };
-    }).catch((e) => console.warn('leader VRM failed to load:', LEADER_MODEL[team], e));
+      const rawName = {};
+      for (const [bn] of VRM_BONES) { const r = vrm.humanoid.getRawBoneNode(bn); if (r) rawName[bn] = r.name; }
+      for (let k = 0; k < VRM_CAP; k++) {
+        const s = skeletonClone(vrm.scene);              // shares geometry + textures
+        s.scale.setScalar(1.85);
+        s.visible = false;
+        s.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
+        scene.add(s);
+        const bones = {};
+        for (const [bn, ax, dir, off] of VRM_BONES) {
+          const node = rawName[bn] && s.getObjectByName(rawName[bn]);
+          if (node) bones[bn] = { node, rest: node.quaternion.clone(), ax, dir, off };
+        }
+        vrmPool[team].push({ scene: s, bones, phase: 0, prevX: 0, prevZ: 0 });
+      }
+    }).catch((e) => console.warn('VRM failed to load:', VRM_MODEL[team], e));
   }
 })();
-// procedural walk/idle on VRM humanoid bones (VRMs ship no clips)
-function animateVRM(L, moving, dead, dt) {
-  const h = L.vrm.humanoid;
-  if (!h) return;
-  L.phase += dt * (moving ? 9 : 2.2);
-  const rot = (name, x, y, z) => { const b = h.getNormalizedBoneNode(name); if (b) b.rotation.set(x, y || 0, z || 0); };
-  if (dead) { // crumpled on the ground
-    rot('hips', -1.5, 0, 0);
-    rot('spine', 0.3, 0, 0);
-    return;
+// procedural walk/idle applied as offsets from each raw bone's rest pose
+function animateVRMClone(V, moving, dt) {
+  V.phase += dt * (moving ? 9 : 2.2);
+  const sw = Math.sin(V.phase) * (moving ? 0.6 : 0.05);
+  for (const bn in V.bones) {
+    const b = V.bones[bn];
+    const isArm = bn.endsWith('Arm');
+    const ang = b.off + (isArm ? Math.abs(sw) * 0.2 * b.dir : sw * b.dir);
+    _q.setFromAxisAngle(_AX[b.ax], ang);
+    b.node.quaternion.copy(b.rest).multiply(_q);
   }
-  const sw = Math.sin(L.phase) * (moving ? 0.6 : 0.04);
-  rot('leftUpperLeg', sw); rot('rightUpperLeg', -sw);
-  rot('leftLowerLeg', Math.max(0, -sw) * 0.7); rot('rightLowerLeg', Math.max(0, sw) * 0.7);
-  rot('leftUpperArm', 0, 0, 1.15 + Math.abs(sw) * 0.2);   // drop arms from the A-pose to the sides
-  rot('rightUpperArm', 0, 0, -1.15 - Math.abs(sw) * 0.2);
-  rot('spine', 0.04, 0, 0);
 }
+// jump the camera to a team's VRM army (C key)
+function focusLeader(t) {
+  const V = vrmPool[t] && vrmPool[t].find((x) => x.scene.visible);
+  if (V) { camTarget.set(V.scene.position.x, 0, V.scene.position.z); zoom = 34; }
+}
+window.__focusLeader = focusLeader;
 
 // ---------------- capture the flag: banners + score ----------------
 let flagsData = null, scoresData = null;
@@ -646,14 +670,8 @@ addEventListener('keydown', (e) => {
     const p = groundPoint(mouseX, mouseY);
     if (p) sendCmd({ type: 'strike', p: [p.x, p.z] });
   }
-  if (e.code === 'KeyC') focusLeader(you && !you.spectator ? you.team : 0); // snap to your champion
+  if (e.code === 'KeyC') focusLeader(you && !you.spectator ? you.team : 0); // snap to your VRM troops
 });
-// jump the camera to a team's VRM champion (C key / console __focusLeader)
-function focusLeader(t) {
-  const L = leaders[t];
-  if (L && L.vrm && L.vrm.scene.visible) { camTarget.set(L.vrm.scene.position.x, 0, L.vrm.scene.position.z); zoom = 30; }
-}
-window.__focusLeader = focusLeader;
 addEventListener('keyup', (e) => (keys[e.code] = false));
 addEventListener('wheel', (e) => { zoom = clamp(zoom + e.deltaY * 0.08, 25, 170); });
 function updateCamera(dt) {
@@ -785,9 +803,9 @@ function updateInstances(dt) {
     const j = soldierUnitIdx[i], u = meta.units[j];
     const isCav = u.type === 'cavalry';
 
-    const lt = i === leaderIndex[0] ? 0 : i === leaderIndex[1] ? 1 : -1;
-    if (lt >= 0 && leaders[lt]) { // rendered as the animated GLB champion instead
-      leaderState[lt] = { x: rs.x, z: rs.z, face: rs.face, state: rs.state };
+    const vs = vrmSlot.get(i);
+    if (vs && vrmPool[vs.team][vs.k]) { // rendered as a VRM avatar instead of a capsule
+      vrmState[vs.team][vs.k] = { x: rs.x, z: rs.z, face: rs.face, state: rs.state, down: !!rs.down, fighting: rs.fighting };
       hideHuman(i);
       const wl = weaponIdx[i]; if (wl >= 0) weaponMesh.setMatrixAt(wl, _zeroM);
       continue;
@@ -851,21 +869,22 @@ function updateInstances(dt) {
   for (const m of [hTorso, hHead, hLeg, hArm]) { if (colorDirty) m.instanceColor.needsUpdate = true; m.instanceMatrix.needsUpdate = true; }
   weaponMesh.instanceMatrix.needsUpdate = true;
 
-  // place & animate each team's VRM champion at its leader soldier
+  // place & animate each VRM avatar at its soldier (walk when moving, hide when dead)
   for (let t = 0; t < 2; t++) {
-    const L = leaders[t], st = leaderState[t];
-    if (!L) continue;
-    const S = L.vrm.scene;
-    if (st && st.state !== 2) {
-      S.visible = true;
-      S.position.set(st.x, 0, st.z);
-      S.rotation.y = st.face; // rotateVRM0 makes the rig face +Z, matching soldier facing
-      const sp = Math.hypot(st.x - L.prevX, st.z - L.prevZ);
-      L.prevX = st.x; L.prevZ = st.z;
-      animateVRM(L, sp > 0.02, st.state === 1, dt);
-    } else S.visible = false;
-    L.vrm.update(dt);
-    leaderState[t] = null;
+    const pool = vrmPool[t], states = vrmState[t];
+    for (let k = 0; k < pool.length; k++) {
+      const V = pool[k], st = states[k];
+      const S = V.scene;
+      if (st && st.state === 0) {
+        S.visible = true;
+        S.position.set(st.x, 0, st.z);
+        S.rotation.y = st.face + Math.PI; // face the direction of travel
+        const sp = Math.hypot(st.x - V.prevX, st.z - V.prevZ);
+        V.prevX = st.x; V.prevZ = st.z;
+        animateVRMClone(V, sp > 0.02, dt);
+      } else S.visible = false;
+      states[k] = null;
+    }
   }
 
   for (const c of unitCentroids) if (c && c.n) { c.x /= c.n; c.z /= c.n; }

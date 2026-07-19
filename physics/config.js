@@ -20,6 +20,8 @@ export const CONFIG = {
   render: {
     brickCap: 6000,      // instanced brick cap (fort + rubble)
     soldier: 'humanoid', // 'humanoid' articulated figures, or 'capsule' for max perf
+    vrmType: 'legion',   // this unit type renders as VRM avatars (rest stay instanced)
+    vrmCap: 8,           // VRM avatars PER TEAM — start small, raise for more (skinned = heavy)
     shadows: false,
     pixelRatio: 2,
   },

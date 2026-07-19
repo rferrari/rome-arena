@@ -1,2 +1,7 @@
 .env
 replays/
+
+# VRM avatars are large; commit only the two champion models actually used
+assets/vrm/*
+!assets/vrm/crusader.vrm
+!assets/vrm/guard.vrm

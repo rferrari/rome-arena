@@ -3,6 +3,7 @@
 // using the exact same sim.js module.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { createSim, TYPES, FIELD_W, FIELD_D, SPACING } from './sim.js';
 import { createArena } from './physics/arena_api.js';
 import { CONFIG } from './physics/config.js';
@@ -395,38 +396,48 @@ for (const m of [brickMesh, ragdollMesh, woodMesh]) {
   m.castShadow = false;
   scene.add(m);
 }
-// ---------------- champion leaders (one animated GLB gladiator per team) ----------------
-// Small CC0 KayKit rigs (~1.6 MB) with embedded Walking_A / Idle / Death_A clips.
-// The rest of each army stays instanced; only the leader is a skinned mesh.
-const LEADER_MODEL = ['./assets/mobs/gladiators/knight.glb', './assets/mobs/gladiators/barbarian.glb'];
-const leaders = [null, null];         // { root, mixer, actions, current, prevX, prevZ }
+// ---------------- champion leaders (one VRM avatar per team) ----------------
+// A high-quality VRM per side (rest of the army stays instanced). VRMs carry no
+// animation clips, so we drive a simple procedural gait on the humanoid bones.
+const LEADER_MODEL = ['./assets/vrm/crusader.vrm', './assets/vrm/guard.vrm'];
+const leaders = [null, null];         // { vrm, phase, prevX, prevZ }
 const leaderIndex = [-1, -1];         // soldier instance index rendered as the leader
 const leaderState = [null, null];     // {x, z, face, state} filled each frame
-function setLeaderAnim(L, name) {
-  if (L.current === name || !L.actions[name]) return;
-  const to = L.actions[name]; to.reset().setEffectiveWeight(1).play();
-  const from = L.actions[L.current];
-  if (from) from.crossFadeTo(to, 0.25, false);
-  L.current = name;
-}
 (function loadLeaders() {
   if (CONFIG.heroesPerTeam <= 0) return; // leaders disabled
   const loader = new GLTFLoader();
+  loader.register((parser) => new VRMLoaderPlugin(parser));
   for (let team = 0; team < 2; team++) {
     loader.loadAsync(LEADER_MODEL[team]).then((gltf) => {
-      const root = gltf.scene;
-      root.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
-      root.scale.setScalar(1.7);
-      root.visible = false;
-      scene.add(root);
-      const mixer = new THREE.AnimationMixer(root);
-      const act = (n) => { const c = THREE.AnimationClip.findByName(gltf.animations, n); return c ? mixer.clipAction(c) : null; };
-      const actions = { idle: act('Idle'), walk: act('Walking_A'), death: act('Death_A') };
-      if (actions.idle) actions.idle.play();
-      leaders[team] = { root, mixer, actions, current: 'idle', prevX: 0, prevZ: 0 };
-    }).catch((e) => console.warn('leader model failed to load:', LEADER_MODEL[team], e));
+      const vrm = gltf.userData.vrm;
+      VRMUtils.rotateVRM0(vrm); // make VRM0 rigs face +Z like VRM1
+      VRMUtils.removeUnnecessaryJoints(vrm.scene);
+      vrm.scene.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
+      vrm.scene.scale.setScalar(1.9); // stand a bit taller than the rank & file
+      vrm.scene.visible = false;
+      scene.add(vrm.scene);
+      leaders[team] = { vrm, phase: 0, prevX: 0, prevZ: 0 };
+    }).catch((e) => console.warn('leader VRM failed to load:', LEADER_MODEL[team], e));
   }
 })();
+// procedural walk/idle on VRM humanoid bones (VRMs ship no clips)
+function animateVRM(L, moving, dead, dt) {
+  const h = L.vrm.humanoid;
+  if (!h) return;
+  L.phase += dt * (moving ? 9 : 2.2);
+  const rot = (name, x, y, z) => { const b = h.getNormalizedBoneNode(name); if (b) b.rotation.set(x, y || 0, z || 0); };
+  if (dead) { // crumpled on the ground
+    rot('hips', -1.5, 0, 0);
+    rot('spine', 0.3, 0, 0);
+    return;
+  }
+  const sw = Math.sin(L.phase) * (moving ? 0.6 : 0.04);
+  rot('leftUpperLeg', sw); rot('rightUpperLeg', -sw);
+  rot('leftLowerLeg', Math.max(0, -sw) * 0.7); rot('rightLowerLeg', Math.max(0, sw) * 0.7);
+  rot('leftUpperArm', 0, 0, 1.15 + Math.abs(sw) * 0.2);   // drop arms from the A-pose to the sides
+  rot('rightUpperArm', 0, 0, -1.15 - Math.abs(sw) * 0.2);
+  rot('spine', 0.04, 0, 0);
+}
 
 // ---------------- capture the flag: banners + score ----------------
 let flagsData = null, scoresData = null;
@@ -635,7 +646,14 @@ addEventListener('keydown', (e) => {
     const p = groundPoint(mouseX, mouseY);
     if (p) sendCmd({ type: 'strike', p: [p.x, p.z] });
   }
+  if (e.code === 'KeyC') focusLeader(you && !you.spectator ? you.team : 0); // snap to your champion
 });
+// jump the camera to a team's VRM champion (C key / console __focusLeader)
+function focusLeader(t) {
+  const L = leaders[t];
+  if (L && L.vrm && L.vrm.scene.visible) { camTarget.set(L.vrm.scene.position.x, 0, L.vrm.scene.position.z); zoom = 30; }
+}
+window.__focusLeader = focusLeader;
 addEventListener('keyup', (e) => (keys[e.code] = false));
 addEventListener('wheel', (e) => { zoom = clamp(zoom + e.deltaY * 0.08, 25, 170); });
 function updateCamera(dt) {
@@ -833,20 +851,20 @@ function updateInstances(dt) {
   for (const m of [hTorso, hHead, hLeg, hArm]) { if (colorDirty) m.instanceColor.needsUpdate = true; m.instanceMatrix.needsUpdate = true; }
   weaponMesh.instanceMatrix.needsUpdate = true;
 
-  // place & animate each team's champion at its leader soldier; walk when moving,
-  // idle when still, death when killed (KayKit rigs face -Z, hence face + PI)
+  // place & animate each team's VRM champion at its leader soldier
   for (let t = 0; t < 2; t++) {
     const L = leaders[t], st = leaderState[t];
     if (!L) continue;
+    const S = L.vrm.scene;
     if (st && st.state !== 2) {
-      L.root.visible = true;
-      L.root.position.set(st.x, 0, st.z);
-      L.root.rotation.y = st.face + Math.PI;
+      S.visible = true;
+      S.position.set(st.x, 0, st.z);
+      S.rotation.y = st.face; // rotateVRM0 makes the rig face +Z, matching soldier facing
       const sp = Math.hypot(st.x - L.prevX, st.z - L.prevZ);
       L.prevX = st.x; L.prevZ = st.z;
-      setLeaderAnim(L, st.state === 1 ? 'death' : sp > 0.02 ? 'walk' : 'idle');
-    } else L.root.visible = false;
-    L.mixer.update(dt);
+      animateVRM(L, sp > 0.02, st.state === 1, dt);
+    } else S.visible = false;
+    L.vrm.update(dt);
     leaderState[t] = null;
   }
 
@@ -983,7 +1001,7 @@ function updateHud() {
   hud.innerHTML = `<b style="color:#e66">Red ${countsData[0]}</b> vs <b style="color:#68f">Blue ${countsData[1]}</b> — ${modeLabel}${selLine}` +
     `<br><span style="color:${fpsCol}">${fpsN} fps</span> · ${alive} soldiers · ${props} props · ${legend}` +
     strikeLine() +
-    `<br>LMB drag: select · RMB drag: form line · RMB click: move · T: testudo/phalanx · [ ]: width · WASD/←→ pan · ↑↓ zoom`;
+    `<br>LMB drag: select · RMB drag: form line · RMB click: move · T: testudo/phalanx · [ ]: width · C: your champion · WASD/←→ pan · ↑↓ zoom`;
 
   if (statsData) {
     const s = statsData;

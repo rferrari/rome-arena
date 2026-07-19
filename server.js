@@ -55,7 +55,7 @@ function startRec() {
   rec = {
     players: PLAYERS, tier: CONFIG.tier, render: CONFIG.render,
     ai: commanders.map((c) => (c ? c.model : null)),
-    units: sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.type.n })),
+    units: sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.n0 })),
     frames: [],
   };
   recSaved = false;
@@ -93,7 +93,7 @@ function initMsg(who) {
     tier: CONFIG.tier, render: CONFIG.render,        // so the client matches the server's quality tier
     units: sim.units.map((u) => ({
       id: u.id, team: u.team, slot: u.slot, type: u.typeKey,
-      ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.type.n,
+      ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.n0,
     })),
   });
 }

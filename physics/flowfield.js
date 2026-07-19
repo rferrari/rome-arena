@@ -21,13 +21,14 @@ export function createFlowField(W, D, cell = 2) {
   return {
     clearBlocked() { blocked.fill(0); },
     blockWorld(x, z) { blocked[idxOf(x, z)] = 1; },
-    // BFS the integration field out from the goal, then set each open cell's
-    // direction toward its lowest-distance neighbour.
-    compute(gx, gz) {
+    // BFS the integration field out from one or more goals (multi-source: each cell
+    // ends up pointing toward its NEAREST goal), then set per-cell directions.
+    // Accepts a single {x,z} or an array of them.
+    compute(goals) {
       dist.fill(-1);
-      const start = idxOf(gx, gz);
-      blocked[start] = 0;
-      const q = [start]; dist[start] = 0;
+      const arr = Array.isArray(goals) ? goals : [goals];
+      const q = [];
+      for (const g of arr) { const s = idxOf(g.x, g.z); blocked[s] = 0; if (dist[s] === -1) { dist[s] = 0; q.push(s); } }
       for (let head = 0; head < q.length; head++) {
         const cur = q[head], cr = (cur / cols) | 0, cc = cur % cols, cd = dist[cur];
         for (const [dc, dr] of NB) {

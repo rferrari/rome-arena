@@ -198,7 +198,7 @@ async function startSolo() {
   you = { team: 0, slot: -1 }; // -1 = owns all of team 0
   sim = createSim({ seed: (Math.random() * 1e9) | 0, players: [2, 2], arena, fort: location.hash.includes('fort') });
   for (let p = 0; p < 2; p++) sim.ai.delete(`0:${p}`);
-  buildMeta(sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, n: u.type.n })));
+  buildMeta(sim.units.map((u) => ({ id: u.id, team: u.team, slot: u.slot, type: u.typeKey, n: u.n0 })));
   setupSoloReaders();
   showLobby([
     { team: 0, slot: 0, human: true }, { team: 0, slot: 1, human: true },

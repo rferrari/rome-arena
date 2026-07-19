@@ -1,7 +1,17 @@
 .env
 replays/
 
-# VRM avatars are large; commit only the two champion models actually used
+
+# VRM avatars: commit only the per-type champion models the game references
 assets/vrm/*
 !assets/vrm/crusader.vrm
 !assets/vrm/guard.vrm
+!assets/vrm/Paladin_J_Nordstrom.vrm
+!assets/vrm/ranger.vrm
+!assets/vrm/pirate.vrm
+!assets/vrm/merchant.vrm
+!assets/vrm/HornGuy.vrm
+!assets/vrm/goblin_d_shareyko.vrm
+!assets/vrm/Zombiegirl_W_Kurniawan.vrm
+!assets/vrm/Nightshade_J_Friedrich.vrm
+!assets/vrm/peasent.vrm

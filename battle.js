@@ -801,7 +801,8 @@ function updateInstances(dt) {
     if (colorKey[i] !== key) {
       colorKey[i] = key;
       const base = TEAM_COLORS[u.team];
-      const col = rs.broken ? base.clone().lerp(WHITE, 0.6) : selected.has(j) ? base.clone().lerp(WHITE, 0.45) : base;
+      // routed = dimmed team colour (still clearly Red/Blue, just faded); selected = brightened
+      const col = rs.broken ? base.clone().multiplyScalar(0.42) : selected.has(j) ? base.clone().lerp(WHITE, 0.45) : base;
       hTorso.setColorAt(i, col); hHead.setColorAt(i, col);
       hLeg.setColorAt(i * 2, col); hLeg.setColorAt(i * 2 + 1, col);
       hArm.setColorAt(i * 2, col); hArm.setColorAt(i * 2 + 1, col);

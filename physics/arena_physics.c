@@ -160,7 +160,7 @@ void arena_set_ragdoll_params(int cap, float life) {
 // recycled at g_ragCap, so the body budget is bounded. Bones are refiltered so
 // corpses fall on the ground/rubble but never block the living battle.
 EMSCRIPTEN_KEEPALIVE
-void arena_spawn_ragdoll(float x, float y, float z, float vx, float vy, float vz) {
+void arena_spawn_ragdoll(float x, float y, float z, float vx, float vy, float vz, float spin) {
   if (g_ragCap <= 0) return;
   int slot = g_ragNext % g_ragCap;
   g_ragNext++;
@@ -169,7 +169,7 @@ void arena_spawn_ragdoll(float x, float y, float z, float vx, float vy, float vz
   for (int i = 0; i < (int) sizeof(Human); i++) ((char*) h)[i] = 0; // zero-init (required)
   CreateHuman(h, g_world, (b3Pos){ x, y, z }, 0.1f, 0.0f, 0.0f, slot + 1, (void*)(intptr_t)(-1), false);
   Human_SetVelocity(h, (b3Vec3){ vx, vy, vz });
-  Human_ApplyRandomAngularImpulse(h, 8.0f);
+  Human_ApplyRandomAngularImpulse(h, spin); // spin scales with the killing blow (gentle poke vs boulder)
   g_ragBorn[slot] = g_ragTime;
   for (int b = 0; b < bone_count; b++) {
     RagBone* rb = &g_ragBone[slot][b];

@@ -343,21 +343,28 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
   }
 
   // ---- damage ----
-  function kill(s) {
+  // imp (optional): the killing blow as a ragdoll launch { vx, vy, vz, spin }. Without
+  // it, the corpse just crumples in place with a light topple — a sword kill shouldn't
+  // fling a body like a boulder. Sources (boulder/explosion/charge) pass a real impulse.
+  function kill(s, imp) {
     s.state = 1; s.deathT = 0;
     s.unit.alive--;
     s.unit.morale = Math.max(0, s.unit.morale - 4);
     if (s.h >= 0) {
       soldierByHandle.delete(s.h);          // no longer a melee/boulder victim
       arena.remove(s.h);                    // drop the upright capsule
-      // spawn a jointed ragdoll flung backward from the soldier's facing (pooled/capped)
-      const k = 3 + rng() * 3;
-      arena.spawnRagdoll(s.x, 1.0, s.z, -Math.sin(s.face) * k + (rng() - 0.5) * 3,
-                         3 + rng() * 2, -Math.cos(s.face) * k + (rng() - 0.5) * 3);
+      let vx, vy, vz, spin;
+      if (imp) { vx = imp.vx; vy = imp.vy; vz = imp.vz; spin = imp.spin; }
+      else { // gentle crumple: small topple along the soldier's own facing
+        const k = 0.8 + rng() * 0.7;
+        vx = -Math.sin(s.face) * k + (rng() - 0.5); vy = 0.8 + rng() * 0.6;
+        vz = -Math.cos(s.face) * k + (rng() - 0.5); spin = 1.2 + rng();
+      }
+      arena.spawnRagdoll(s.x, 1.0, s.z, vx, vy, vz, spin);
       s.h = -1;
     }
   }
-  function damage(s, dmg, kind) {
+  function damage(s, dmg, kind, imp) {
     if (s.state !== 0) return 0;
     const A = s.unit.type.alt;
     if (s.unit.stance && A) {
@@ -370,11 +377,12 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     }
     s.hp -= dmg;
     s.fightT = 0.5;
-    if (s.hp <= 0) { kill(s); return 1; }
+    if (s.hp <= 0) { kill(s, imp); return 1; }
     return 0;
   }
   function attack(s, target) {
     const T = s.unit.type;
+    const charged = T.charge && s.mom > 8; // a cavalry charge lands a much harder blow
     let dmg = T.dmg + rng() * T.dmgVar;
     if (T.vsCav && target.unit.typeKey === 'cavalry') {
       const b = dmg * (T.vsCav - 1);
@@ -395,14 +403,22 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
       dmg += b; stats.phalanxDmg.n++; stats.phalanxDmg.dmg += b;
     }
     s.fightT = 0.5;
-    damage(target, dmg, 'melee');
+    // ragdoll shove: a normal strike topples the victim gently away from the attacker;
+    // a cavalry charge sends them flying
+    const dx = target.x - s.x, dz = target.z - s.z, dd = Math.hypot(dx, dz) || 1;
+    const f = charged ? 8 : 1.8 + rng() * 0.7;
+    damage(target, dmg, 'melee', { vx: (dx / dd) * f, vy: 1 + f * 0.2, vz: (dz / dd) * f, spin: 1 + f * 0.5 });
   }
 
   function explode(x, z) {
     events.push(['boom', x, z]);
     forNeighbors(x, z, (s) => {
-      const d = Math.hypot(s.x - x, s.z - z);
-      if (d < CAT_AOE) stats.boulders.kills += damage(s, 120 * (1 - d / CAT_AOE), 'ranged');
+      const dx = s.x - x, dz = s.z - z, d = Math.hypot(dx, dz);
+      if (d < CAT_AOE) {
+        const f = 6 + 8 * (1 - d / CAT_AOE), dd = d || 1; // closer = flung harder, radially out
+        stats.boulders.kills += damage(s, 120 * (1 - d / CAT_AOE), 'ranged',
+          { vx: (dx / dd) * f, vy: 3 + f * 0.3, vz: (dz / dd) * f, spin: f * 0.7 });
+      }
     });
   }
 
@@ -415,9 +431,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     arena.explode(x, 1.0, z, POT_R, 8);
     for (const s of soldiers) { // full scan: rare event, radius exceeds the grid reach
       if (s.state !== 0) continue;
-      const d = Math.hypot(s.x - x, s.z - z);
+      const dx = s.x - x, dz = s.z - z, d = Math.hypot(dx, dz);
       if (d >= POT_R) continue;
-      stats.boulders.kills += damage(s, POT_DMG * (1 - d / POT_R), 'ranged');
+      const f = 8 + 12 * (1 - d / POT_R), dd = d || 1; // fire pot throws bodies hard, radially
+      stats.boulders.kills += damage(s, POT_DMG * (1 - d / POT_R), 'ranged',
+        { vx: (dx / dd) * f, vy: 4 + f * 0.35, vz: (dz / dd) * f, spin: f * 0.8 });
       if (s.state === 0) s.down = Math.max(s.down, 1 + rng());
     }
   }
@@ -653,7 +671,8 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
           const vx = (tx - u.ax) / dur, vz = (tz - u.az) / dur;
           const vy = (0 - BOULDER_LAUNCH_Y) / dur + 0.5 * GRAVITY * dur;
           const h = arena.addBoulder(u.ax, BOULDER_LAUNCH_Y, u.az, vx, vy, vz, BOULDER_R);
-          boulders.push({ h, born: sim.time, hits: 0, fire: rng() < 0.35 }); // ~1/3 are fire pots
+          const vh = Math.hypot(vx, vz) || 1;
+          boulders.push({ h, born: sim.time, hits: 0, fire: rng() < 0.35, dx: vx / vh, dz: vz / vh }); // ~1/3 are fire pots
           stats.boulders.fired++;
           events.push(['shot', u.ax, u.az, tx, tz, dur]); // cosmetic arc for the client
         }
@@ -708,9 +727,12 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         const a = pairs[i * 2], b = pairs[i * 2 + 1];
         const ka = xf[a * ST + 7], kb = xf[b * ST + 7];
         if (ka === 6 || kb === 6) { // flying rubble vs soldier (speed-filtered in WASM)
+          const rub = ka === 6 ? a : b;
           const victim = soldierByHandle.get(ka === 6 ? b : a);
           if (victim && victim.state === 0) {
-            stats.crushed += damage(victim, 70 + rng() * 40, 'melee');
+            const dx = victim.x - xf[rub * ST], dz = victim.z - xf[rub * ST + 2], dd = Math.hypot(dx, dz) || 1;
+            stats.crushed += damage(victim, 70 + rng() * 40, 'melee', // knocked aside + up by the falling stone
+              { vx: (dx / dd) * 3, vy: 2 + rng(), vz: (dz / dd) * 3, spin: 4 + rng() * 2 });
             if (victim.state === 0) victim.down = Math.max(victim.down, 1.5);
           }
           continue;
@@ -720,7 +742,12 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         if (bh < 0) continue;
         const bl = boulders.find((x) => x.h === bh);
         const victim = soldierByHandle.get(oh);
-        if (victim) { stats.boulders.kills += damage(victim, BOULDER_DMG, 'ranged'); bl.hits++; }
+        if (victim) { // a rolling rock bowls bodies along its path and up into the air
+          const f = 15;
+          stats.boulders.kills += damage(victim, BOULDER_DMG, 'ranged',
+            { vx: (bl?.dx ?? 0) * f, vy: 5, vz: (bl?.dz ?? 0) * f, spin: 9 });
+          bl.hits++;
+        }
         else { // hit terrain, wall, or rubble — detonate/splash at the rock (walls breach in WASM)
           const k = xf[oh * ST + 7];
           if (k === 4 || k === 2 || k === 6) {
@@ -752,7 +779,10 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
             if (d < bd) { bd = d; hit = s; }
           });
         }
-        if (hit && hit.state === 0) { damage(hit, a.dmg, 'ranged'); stats.arrows.hits++; }
+        if (hit && hit.state === 0) { // a light backward stagger along the arrow's flight
+          damage(hit, a.dmg, 'ranged', { vx: a.dx * 2, vy: 1.2, vz: a.dz * 2, spin: 1.5 });
+          stats.arrows.hits++;
+        }
         arrows.splice(i, 1);
       }
     }
@@ -844,8 +874,9 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     if (!t) return;
     s.cdR = R.cd * (0.8 + rng() * 0.4);
     const tx = t.x + (rng() - 0.5) * 4, tz = t.z + (rng() - 0.5) * 4;
-    const dur = 0.4 + Math.hypot(tx - s.x, tz - s.z) / 28;
-    arrows.push({ tx, tz, t: 0, dur, dmg: R.dmg + rng() * R.dmgVar });
+    const fl = Math.hypot(tx - s.x, tz - s.z) || 1;
+    const dur = 0.4 + fl / 28;
+    arrows.push({ tx, tz, t: 0, dur, dmg: R.dmg + rng() * R.dmgVar, dx: (tx - s.x) / fl, dz: (tz - s.z) / fl });
     stats.arrows.fired++;
     s.face = Math.atan2(tx - s.x, tz - s.z);
     events.push(['arrow', s.x, s.z, tx, tz, dur]);

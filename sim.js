@@ -182,6 +182,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
   // bricks. Default off so open-field test_sim is unaffected.
   let nav = null, teamForts = null, teamStance = null, navT = 0, engines = null;
   let caps = null;                            // each team's capital (assault objective)
+  let cityFrontZ = null, cityDir = 0;         // defender wall line + which way it faces (for staging)
   const assault = ['stage', 'stage'];         // per-team phase: 'stage' -> 'storm'
   let lastKill = 0;                           // sim.time of the last death (stalemate detection)
   if (fort) {
@@ -200,8 +201,9 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     };
     const dir = DEF === 0 ? 1 : -1, facing = DEF === 0 ? Math.PI : 0; // dir points into the DEF side
     const cw = F.courses, halfW = 150, wallZ = dir * 22, backZ = dir * 148; // curtain front / city back
-    // front curtain with a central gate, side walls, back wall — a full enclosure
-    arena.buildWall(-halfW, wallZ, -13, wallZ, cw); arena.buildWall(13, wallZ, halfW, wallZ, cw);
+    cityFrontZ = wallZ; cityDir = dir;         // attackers stage outside this line until a breach
+    // SOLID front curtain (no gate) + side + back walls — the siege towers ram it open
+    arena.buildWall(-halfW, wallZ, halfW, wallZ, cw);
     arena.buildWall(-halfW, wallZ, -halfW, backZ, cw); arena.buildWall(halfW, wallZ, halfW, backZ, cw);
     arena.buildWall(-halfW, backZ, halfW, backZ, cw);
     // corner towers + two small watchtowers flanking the gate (garrison models on top)
@@ -224,13 +226,16 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
       const gz = f.tower ? f.cz : f.cz + dir * f.hs; // towers: stand on top; keep: rear crest
       makeUnit(DEF, 0, 'archer', f.cx, gz, facing, nArch, { y: f.courses + 0.15, garrison: true });
     }
-    // jointed siege engines — only the ATTACKER besieges (trebuchet line + a siege tower)
+    // jointed siege engines — the ATTACKER besieges: a trebuchet line, plus THREE siege
+    // towers that ram the solid wall on separate lanes to punch the breaches
     engines = { trebs: [], towers: [] };
     const adir = ATT === 0 ? 1 : -1, ayaw = ATT === 0 ? Math.PI : 0;
-    for (const tx of [-60, 0, 60])
+    for (const tx of [-90, -30, 30, 90])
       engines.trebs.push({ id: arena.addTrebuchet(tx, adir * 100, ayaw), team: ATT, x: tx, z: adir * 100, cd: 3 + rng() * 5 });
-    const id = arena.addTower(0, adir * 70, ayaw);
-    engines.towers.push({ id, h: arena.towerHandle(id), team: ATT, dropped: false });
+    for (const lane of [-70, 0, 70]) { // one tower per lane, aimed straight at the wall there
+      const id = arena.addTower(lane, adir * 62, ayaw);
+      engines.towers.push({ id, h: arena.towerHandle(id), team: ATT, laneX: lane, dropped: false });
+    }
 
     arena.sync();
     nav = [createFlowField(FIELD_W, FIELD_D, F.navCell), createFlowField(FIELD_W, FIELD_D, F.navCell)];
@@ -655,10 +660,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         // While the team is STAGING, hold a standoff ring outside the walls (facing
         // them, archers loosing) and let the artillery breach — then storm through.
         if (T.ranged) fireArrowMaybe(s, dt);
-        const cap = caps && caps[1 - u.team];
-        if (cap && assault[u.team] === 'stage') {
-          const dc = Math.hypot(cap.cx - s.x, cap.cz - s.z);
-          if (dc < cap.hs + 26) { s.face = Math.atan2(cap.cx - s.x, cap.cz - s.z); setStop(s); continue; }
+        // While STAGING, hold in a band just OUTSIDE the enemy wall (facing it) and let
+        // the siege towers ram breaches — then storm through the gaps.
+        if (assault[u.team] === 'stage' && cityFrontZ !== null) {
+          const gap = cityDir * (cityFrontZ - s.z); // >0 = still outside the wall
+          if (gap > -3 && gap < 16) { s.face = cityDir === 1 ? 0 : Math.PI; setStop(s); continue; }
         }
         const dir = nav[u.team].sample(s.x, s.z);
         if (dir) { s.face = Math.atan2(dir.x, dir.z); setVel(s, s.x + dir.x, s.z + dir.z, s.speed * speedMult, dt); }
@@ -778,27 +784,27 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         const dur = 1.8 + fd / 35;
         arena.trebuchetFire(tb.id, (tx - tb.x) / dur, (0 - TREB_H) / dur + 0.5 * GRAVITY * dur, (tz - tb.z) / dur, 1.5);
       }
-      // siege towers: roll toward the enemy capital along the flow field (so they route
-      // around walls/houses instead of bulldozing through), then stop at the wall, drop
-      // the drawbridge, and punch a breach the assault can pour through.
+      // siege towers: each RAMS straight down its lane into the solid wall and punches
+      // a wide breach (the "gate") the assault pours through. Collides only with walls,
+      // so it barrels through the crowd; drives HARD and tears a big hole on impact.
       const xfE = arena.transforms, STE = arena.XF_STRIDE;
       for (const tw of engines.towers) {
-        if (tw.dropped) continue;
+        if (tw.dropped || cityFrontZ === null) continue;
         const o = tw.h * STE, rx = xfE[o], rz = xfE[o + 2];
-        let cap = null, cd = Infinity; // nearest enemy capital (skip solid towers)
-        for (const f of teamForts[1 - tw.team]) if (!f.tower) { const dd = Math.hypot(f.cx - rx, f.cz - rz); if (dd < cd) { cd = dd; cap = f; } }
-        if (cap && cd < cap.hs + 6) { // reached the wall: drop the bridge + tear a big breach
+        const tx = tw.laneX, tz = cityFrontZ, dx = tx - rx, dz = tz - rz, d = Math.hypot(dx, dz) || 1;
+        const moved = Math.hypot(rx - (tw.px ?? rx), rz - (tw.pz ?? rz));
+        tw.px = rx; tw.pz = rz;
+        tw.stall = moved < 0.08 ? (tw.stall || 0) + dt : 0;
+        if (Math.abs(rz - tz) < 4 || tw.stall > 0.4) { // hit the wall: drop bridge + ram a wide breach
           arena.towerDrive(tw.id, 0, 0);
           arena.towerDrop(tw.id);
-          arena.breach(rx + ((cap.cx - rx) / cd) * 5, 1, rz + ((cap.cz - rz) / cd) * 5, 11);
-          assault[tw.team] = 'storm'; // the tower's breach sounds the assault immediately
-          events.push(['note', `${teamName(tw.team)} siege tower breaches the wall — storm!`]);
+          arena.breach(tx, 1, tz, 16);                  // a wide gate torn in the wall
+          assault[tw.team] = 'storm';
+          events.push(['note', `${teamName(tw.team)} siege tower rams the wall open — storm!`]);
           tw.dropped = true;
           continue;
         }
-        const dir = nav[tw.team].sample(rx, rz);
-        if (dir) arena.towerDrive(tw.id, dir.x * 4, dir.z * 4);
-        else if (cap) arena.towerDrive(tw.id, ((cap.cx - rx) / cd) * 4, ((cap.cz - rz) / cd) * 4);
+        arena.towerDrive(tw.id, (dx / d) * 8, (dz / d) * 8); // push HARD straight at the wall
       }
     }
     // physics contacts: boulders plowing through crowds, fire pots detonating on

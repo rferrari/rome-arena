@@ -174,11 +174,12 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     teamForts = [[], []];
     for (let t = 0; t < 2; t++) {
       const dir = t === 0 ? 1 : -1, facing = t === 0 ? Math.PI : 0;
-      // forward watchtowers near the CENTRE (both cities) — the field borders stay
-      // open, so cavalry can sweep the flanks around the buildings
+      // forward watchtowers near the CENTRE (both cities) — pulled ~30% back toward
+      // each team's own side so they sit just ahead of the deployment line, not on
+      // the midfield border. Field borders stay open for flanking cavalry sweeps.
       for (const tx of [-30, 30]) {
-        arena.buildFort(tx, dir * 12, 5, F.courses, -dir);
-        teamForts[t].push({ cx: tx, cz: dir * 12, hs: 5, courses: F.courses });
+        arena.buildFort(tx, dir * 24, 5, F.courses, -dir);
+        teamForts[t].push({ cx: tx, cz: dir * 24, hs: 5, courses: F.courses });
       }
       if (t === 0) {
         // RED grid city
@@ -225,7 +226,9 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
   // at 0 tickets loses. Gives commanders a reason to split and contest ground.
   let zones = null, tickets = null, domT = 0;
   if (dom) {
-    zones = [{ x: -55, z: 0, r: 12, holder: -1 }, { x: 0, z: 0, r: 12, holder: -1 }, { x: 55, z: 0, r: 12, holder: -1 }];
+    // one zone in front of each team's home castle (x=0, z=±46) and one at midfield —
+    // your own is easy to hold, the enemy's is a hard assault, the centre is the brawl
+    zones = [{ x: 0, z: 46, r: 12, holder: -1 }, { x: 0, z: 0, r: 12, holder: -1 }, { x: 0, z: -46, r: 12, holder: -1 }];
     tickets = [400, 400];
     sim.zones = zones; sim.tickets = tickets;
   }

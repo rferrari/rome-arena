@@ -28,6 +28,7 @@ const SYSTEM = (team) =>
   `legion and pike can enter a defensive stance (testudo/phalanx). ` +
   `Reply with ONLY a single JSON object and nothing else — no reasoning, no markdown, no <think>:\n` +
   `{"orders":[{"unit":<id>,"x":<num>,"z":<num>,"stance":<0 or 1>}],"taunt":"<short line>"}\n` +
+  `Issue AT MOST 5 orders per turn — command the key movements, not every unit. ` +
   `Order a unit to march to (x,z) to attack, flank, defend, or besiege. Omit stance unless changing it. Be decisive and tactical.`;
 
 // Pull the orders object out of the reply. Tolerates reasoning models (gpt-oss,
@@ -65,10 +66,13 @@ function mockPlan(sim, team) {
   return { orders, taunt: '(mock) For glory — advance!' };
 }
 
-// Apply validated orders; returns the count actually issued.
+const MAX_ORDERS = 5; // cap moves applied per turn — a general commands the big picture
+
+// Apply validated orders (up to MAX_ORDERS); returns the count actually issued.
 function apply(sim, team, orders) {
   let n = 0;
   for (const o of orders || []) {
+    if (n >= MAX_ORDERS) break;
     const u = sim.units[o.unit];
     if (!u || u.team !== team || u.alive <= 0 || u.broken) continue;
     if (Number.isFinite(o.x) && Number.isFinite(o.z)) {

@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
-import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { createSim, TYPES, FIELD_W, FIELD_D, SPACING } from './sim.js';
 import { createArena } from './physics/arena_api.js';
 import { CONFIG } from './physics/config.js';
@@ -399,64 +399,45 @@ for (const m of [brickMesh, ragdollMesh, woodMesh]) {
   m.castShadow = false;
   scene.add(m);
 }
-// ---------------- VRM army (one unit type rendered as VRM avatars) ----------------
-// A high-quality VRM per side; the chosen unit type is rendered as pooled VRM CLONES
-// (SkeletonUtils shares geometry/textures, so N clones ≈ 1 model's memory). Start
-// small via VRM_CAP and raise it. VRMs ship no clips, so a procedural gait rotates
-// humanoid bones relative to their rest pose. Everything else stays instanced.
-const VRM_MODEL = ['./assets/vrm/crusader.vrm', './assets/vrm/guard.vrm'];
-const VRM_TYPE = CONFIG.render.vrmType || 'legion';   // which unit type becomes VRM
-let VRM_CAP = CONFIG.render.vrmCap ?? 8;              // VRM avatars per team (start small)
-// gait bones: [humanoid name, local axis, direction, restOffset(rad)]
-const VRM_BONES = [
-  ['leftUpperLeg', 'x', 1, 0], ['rightUpperLeg', 'x', -1, 0],
-  ['leftLowerLeg', 'x', -1, 0], ['rightLowerLeg', 'x', 1, 0],
-  ['leftUpperArm', 'z', 1, 1.15], ['rightUpperArm', 'z', -1, -1.15],
-];
-const _AX = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
-const vrmPool = [[], []];              // team -> [ {scene, bones:{name:{node,rest,ax,dir,off}}, phase, prevX, prevZ} ]
+// ---------------- character army (one unit type rendered as GLB gladiators) ----------------
+// The chosen unit type is rendered as pooled GLB CLONES (SkeletonUtils shares
+// geometry/textures, so N clones ≈ 1 model's memory) animated by the model's own
+// embedded Idle / Walking_A / Death_A clips via a per-clone AnimationMixer. Low-poly
+// KayKit rigs — far lighter than VRM. Everything else stays instanced. Start small
+// via vrmCap and raise it. (Named vrm* to share the plumbing with the vrm branch.)
+const CHAR_MODEL = ['./assets/mobs/gladiators/knight.glb', './assets/mobs/gladiators/barbarian.glb'];
+const VRM_TYPE = CONFIG.render.vrmType || 'legion';   // which unit type becomes a character
+let VRM_CAP = CONFIG.render.vrmCap ?? 8;              // avatars per team (start small)
+const vrmPool = [[], []];              // team -> [ {scene, mixer, actions, current, prevX, prevZ} ]
 const vrmSlot = new Map();             // soldier index -> {team, k}
 const vrmState = [[], []];             // team -> [ {x,z,face,state,down,fighting} | null ]
-const _q = new THREE.Quaternion();
-(function loadVRMArmy() {
+(function loadCharArmy() {
   const loader = new GLTFLoader();
-  loader.register((parser) => new VRMLoaderPlugin(parser));
+  loader.setMeshoptDecoder(MeshoptDecoder); // KayKit GLBs use EXT_meshopt_compression
   for (let team = 0; team < 2; team++) {
-    loader.loadAsync(VRM_MODEL[team]).then((gltf) => {
-      const vrm = gltf.userData.vrm;
-      VRMUtils.rotateVRM0(vrm);                          // VRM0 rigs -> face +Z
-      VRMUtils.removeUnnecessaryJoints(vrm.scene);
-      const rawName = {};
-      for (const [bn] of VRM_BONES) { const r = vrm.humanoid.getRawBoneNode(bn); if (r) rawName[bn] = r.name; }
+    loader.loadAsync(CHAR_MODEL[team]).then((gltf) => {
       for (let k = 0; k < VRM_CAP; k++) {
-        const s = skeletonClone(vrm.scene);              // shares geometry + textures
-        s.scale.setScalar(1.85);
+        const s = skeletonClone(gltf.scene);             // shares geometry + textures
+        s.scale.setScalar(1.6);                          // soldier-sized (matches the capsule troops)
         s.visible = false;
         s.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
         scene.add(s);
-        const bones = {};
-        for (const [bn, ax, dir, off] of VRM_BONES) {
-          const node = rawName[bn] && s.getObjectByName(rawName[bn]);
-          if (node) bones[bn] = { node, rest: node.quaternion.clone(), ax, dir, off };
-        }
-        vrmPool[team].push({ scene: s, bones, phase: 0, prevX: 0, prevZ: 0 });
+        const mixer = new THREE.AnimationMixer(s);
+        const act = (n) => { const c = THREE.AnimationClip.findByName(gltf.animations, n); return c ? mixer.clipAction(c) : null; };
+        const actions = { idle: act('Idle'), walk: act('Walking_A'), death: act('Death_A') };
+        if (actions.idle) actions.idle.play();
+        vrmPool[team].push({ scene: s, mixer, actions, current: 'idle', prevX: 0, prevZ: 0 });
       }
-    }).catch((e) => console.warn('VRM failed to load:', VRM_MODEL[team], e));
+    }).catch((e) => console.warn('GLB failed to load:', CHAR_MODEL[team], e));
   }
 })();
-// procedural walk/idle applied as offsets from each raw bone's rest pose
-function animateVRMClone(V, moving, dt) {
-  V.phase += dt * (moving ? 9 : 2.2);
-  const sw = Math.sin(V.phase) * (moving ? 0.6 : 0.05);
-  for (const bn in V.bones) {
-    const b = V.bones[bn];
-    const isArm = bn.endsWith('Arm');
-    const ang = b.off + (isArm ? Math.abs(sw) * 0.2 * b.dir : sw * b.dir);
-    _q.setFromAxisAngle(_AX[b.ax], ang);
-    b.node.quaternion.copy(b.rest).multiply(_q);
-  }
+function setCharAnim(V, name) {
+  if (V.current === name || !V.actions[name]) return;
+  const to = V.actions[name]; to.reset().setEffectiveWeight(1).play();
+  const from = V.actions[V.current]; if (from) from.crossFadeTo(to, 0.2, false);
+  V.current = name;
 }
-// jump the camera to a team's VRM army (C key)
+// jump the camera to a team's character army (C key)
 function focusLeader(t) {
   const V = vrmPool[t] && vrmPool[t].find((x) => x.scene.visible);
   if (V) { camTarget.set(V.scene.position.x, 0, V.scene.position.z); zoom = 34; }
@@ -875,14 +856,15 @@ function updateInstances(dt) {
     for (let k = 0; k < pool.length; k++) {
       const V = pool[k], st = states[k];
       const S = V.scene;
-      if (st && st.state === 0) {
+      if (st && st.state !== 2) {
         S.visible = true;
         S.position.set(st.x, 0, st.z);
-        S.rotation.y = st.face + Math.PI; // face the direction of travel
+        S.rotation.y = st.face + Math.PI; // KayKit rigs face -Z
         const sp = Math.hypot(st.x - V.prevX, st.z - V.prevZ);
         V.prevX = st.x; V.prevZ = st.z;
-        animateVRMClone(V, sp > 0.02, dt);
+        setCharAnim(V, st.state === 1 ? 'death' : sp > 0.02 ? 'walk' : 'idle');
       } else S.visible = false;
+      V.mixer.update(dt);
       states[k] = null;
     }
   }

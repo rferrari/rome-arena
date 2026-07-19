@@ -430,7 +430,7 @@ const _q = new THREE.Quaternion();
       for (const [bn] of VRM_BONES) { const r = vrm.humanoid.getRawBoneNode(bn); if (r) rawName[bn] = r.name; }
       for (let k = 0; k < VRM_CAP; k++) {
         const s = skeletonClone(vrm.scene);              // shares geometry + textures
-        s.scale.setScalar(1.85);
+        s.scale.setScalar(1.05); // soldier-sized (was 1.85 = too tall)
         s.visible = false;
         s.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
         scene.add(s);

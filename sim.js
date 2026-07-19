@@ -137,25 +137,57 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
   // standing on the real wall bricks — breach the wall and the garrison comes down
   // with it. stance decides holding your own forts vs storming the enemy's.
   // Default off so open-field test_sim is unaffected.
-  let nav = null, teamForts = null, teamStance = null, navT = 0;
+  // Two MEDIEVAL CITIES face each other. Both keep two forward watchtowers near
+  // midfield (smashed, they collapse into rubble walls). Red's capital is a GRID
+  // city: square king castle plus square-house districts on straight streets.
+  // Blue's is a RADIAL "onion": a round keep inside a gated circular curtain,
+  // ringed by round houses. Battlement archer garrisons stand on the real wall
+  // bricks. Default off so open-field test_sim is unaffected.
+  let nav = null, teamForts = null, teamStance = null, navT = 0, engines = null;
   if (fort) {
     const F = CONFIG.fort;
     teamStance = F.stance;
-    const layout = (dir) => [
-      { cx: -58, cz: dir * 12, hs: 5, courses: F.courses, gd: -dir },      // flank tower (near midfield)
-      { cx: 58, cz: dir * 12, hs: 5, courses: F.courses, gd: -dir },       // flank tower (near midfield)
-      { cx: 0, cz: dir * 56, hs: 10, courses: F.courses + 3, gd: -dir },   // king castle (back centre)
-    ];
-    teamForts = [layout(1), layout(-1)];
-    for (let t = 0; t < 2; t++) for (const f of teamForts[t]) arena.buildFort(f.cx, f.cz, f.hs, f.courses, f.gd);
-    // battlement garrisons: a single row of archers on each fort's solid rear wall
-    // crest (the front wall is split by the gate), facing the enemy over the courtyard
+    teamForts = [[], []];
     for (let t = 0; t < 2; t++) {
       const dir = t === 0 ? 1 : -1, facing = t === 0 ? Math.PI : 0;
+      // forward watchtowers (both cities)
+      for (const tx of [-58, 58]) {
+        arena.buildFort(tx, dir * 12, 5, F.courses, -dir);
+        teamForts[t].push({ cx: tx, cz: dir * 12, hs: 5, courses: F.courses });
+      }
+      if (t === 0) {
+        // RED grid city
+        arena.buildFort(0, 56, 10, F.courses + 3, -1);
+        teamForts[t].push({ cx: 0, cz: 56, hs: 10, courses: F.courses + 3 });
+        const hw = 3, g = 0.6, hc = 2; // square houses with door-gap corners
+        for (const hx of [-40, -26, 26, 40]) for (const hz of [48, 62]) {
+          arena.buildWall(hx - hw + g, hz - hw, hx + hw - g, hz - hw, hc);
+          arena.buildWall(hx - hw + g, hz + hw, hx + hw - g, hz + hw, hc);
+          arena.buildWall(hx - hw, hz - hw + g, hx - hw, hz + hw - g, hc);
+          arena.buildWall(hx + hw, hz - hw + g, hx + hw, hz + hw - g, hc);
+        }
+      } else {
+        // BLUE radial onion city
+        arena.buildRondel(0, -54, 4.5, 12, F.courses + 3);                                  // round keep
+        arena.buildRondel(0, -54, 13, 22, Math.max(3, F.courses - 1), Math.PI / 2, true);   // curtain, gate to enemy
+        teamForts[t].push({ cx: 0, cz: -54, hs: 13, courses: Math.max(3, F.courses - 1) });
+        for (const [hx, hz] of [[-19, -46], [19, -46], [-22, -58], [22, -58], [-10, -66], [10, -66]])
+          arena.buildRondel(hx, hz, 2.2, 7, 2); // round houses ringing the curtain
+      }
+      // battlement garrisons on each objective's rear crest
       for (const f of teamForts[t]) {
-        const nArch = f.hs >= 10 ? 6 : 3; // fits inside the wall span, clear of corner towers
+        const nArch = f.hs >= 10 ? 6 : 3;
         makeUnit(t, 0, 'archer', f.cx, f.cz + dir * f.hs, facing, nArch, { y: f.courses + 0.15, garrison: true });
       }
+    }
+    // jointed siege engines: two trebuchets (motor-swung revolute arms) and one
+    // battering ram (heavy sled that breaches the bricks it slams) per team
+    engines = { trebs: [], rams: [] };
+    for (let t = 0; t < 2; t++) {
+      const dir = t === 0 ? 1 : -1, yaw = t === 0 ? Math.PI : 0;
+      for (const tx of [-22, 22])
+        engines.trebs.push({ id: arena.addTrebuchet(tx, dir * 48, yaw), team: t, x: tx, z: dir * 48, cd: 3 + rng() * 5 });
+      engines.rams.push({ h: arena.addRam(0, dir * 36), team: t, t: rng() * 6 }); // clear lane between the blocks
     }
     arena.sync();
     nav = [createFlowField(FIELD_W, FIELD_D, F.navCell), createFlowField(FIELD_W, FIELD_D, F.navCell)];
@@ -532,6 +564,33 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
           stats.boulders.fired++;
           events.push(['shot', u.ax, u.az, tx, tz, dur]); // cosmetic arc for the client
         }
+      }
+    }
+    // siege engines: trebuchets whip their jointed arms at the nearest standing
+    // enemy fort (half the shots are fire pots); the ram crew pounds toward the
+    // enemy gate, breaching whatever masonry it slams into.
+    if (engines) {
+      const TREB_RANGE = 115, TREB_CD = 9, TREB_H = 4.5;
+      for (const tb of engines.trebs) {
+        tb.cd -= dt;
+        const bh = arena.trebuchetPoll(tb.id); // boulder released mid-swing last tick?
+        if (bh >= 0) { boulders.push({ h: bh, born: sim.time, hits: 0, fire: rng() < 0.5 }); stats.boulders.fired++; }
+        if (tb.cd > 0) continue;
+        let ef = null, fd = Infinity;
+        for (const f of teamForts[1 - tb.team]) { const dd = Math.hypot(f.cx - tb.x, f.cz - tb.z); if (dd < fd) { fd = dd; ef = f; } }
+        if (!ef || fd > TREB_RANGE) continue;
+        tb.cd = TREB_CD;
+        const tx = ef.cx + (rng() - 0.5) * 2 * ef.hs, tz = ef.cz + (rng() - 0.5) * 2 * ef.hs;
+        const dur = 1.8 + fd / 35;
+        arena.trebuchetFire(tb.id, (tx - tb.x) / dur, (0 - TREB_H) / dur + 0.5 * GRAVITY * dur, (tz - tb.z) / dur, 1.5);
+      }
+      const xfE = arena.transforms, STE = arena.XF_STRIDE;
+      for (const r of engines.rams) {
+        r.t += dt;
+        const o = r.h * STE, rx = xfE[o], rz = xfE[o + 2];
+        const dirv = nav[r.team].sample(rx, rz);
+        const pound = 2.2 + Math.max(0, Math.sin(r.t * 2.2)) * 2.6; // heave... SLAM rhythm
+        if (dirv) arena.setVelocity(r.h, dirv.x * pound, dirv.z * pound);
       }
     }
     // physics contacts: boulders plowing through crowds, fire pots detonating on

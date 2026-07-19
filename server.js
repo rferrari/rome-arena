@@ -75,7 +75,7 @@ function snapshot() {
   const nS = sim.soldiers.length, nU = sim.units.length;
   const xf = sim.arena.transforms, ST = sim.arena.XF_STRIDE, count = sim.arena.count;
   const props = [];
-  for (let h = 0; h < count; h++) { const k = xf[h * ST + 7]; if (k === 2 || k === 5 || k === 6) props.push(h); }
+  for (let h = 0; h < count; h++) { const k = xf[h * ST + 7]; if (k === 2 || k === 5 || k === 6 || k === 7 || k === 8) props.push(h); }
   const nP = props.length;
 
   const buf = new ArrayBuffer(5 + nS * 6 + nU * 7 + 2 + nP * PROP_BYTES);

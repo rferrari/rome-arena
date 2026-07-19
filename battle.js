@@ -363,7 +363,13 @@ const ragdollMesh = new THREE.InstancedMesh(
   new THREE.MeshStandardMaterial({ color: 0x8a5a3a, roughness: 0.9 }),
   RAGDOLL_BONE_CAP
 );
-for (const m of [brickMesh, ragdollMesh]) {
+// siege engines (trebuchet frames/arms + battering rams) — wooden boxes
+const woodMesh = new THREE.InstancedMesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshStandardMaterial({ color: 0x6b4626, roughness: 0.9 }),
+  96
+);
+for (const m of [brickMesh, ragdollMesh, woodMesh]) {
   m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   m.frustumCulled = false;
   m.castShadow = false;
@@ -433,9 +439,9 @@ function updateDom() {
   }
 }
 
-let lastBricks = 0, lastRags = 0;
+let lastBricks = 0, lastRags = 0, lastWood = 0;
 function updateProps() {
-  let nb = 0, nr = 0;
+  let nb = 0, nr = 0, nw = 0;
   const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
     dummy.position.set(x, y, z);
     dummy.quaternion.set(qx, qy, qz, qw);
@@ -443,6 +449,10 @@ function updateProps() {
       if (nr >= ragdollMesh.count) return;
       dummy.scale.set(hx, hy, hz);
       dummy.updateMatrix(); ragdollMesh.setMatrixAt(nr++, dummy.matrix);
+    } else if (kind === 7 || kind === 8) { // siege engine timber (trebuchet frame/arm, ram)
+      if (nw >= woodMesh.count) return;
+      dummy.scale.set(hx * 2, hy * 2, hz * 2);
+      dummy.updateMatrix(); woodMesh.setMatrixAt(nw++, dummy.matrix);
     } else { // brick (2) or rubble (6)
       if (nb >= brickMesh.count) return;
       dummy.scale.set(hx * 2, hy * 2, hz * 2);
@@ -453,7 +463,7 @@ function updateProps() {
     const xf = sim.arena.transforms, ST = sim.arena.XF_STRIDE, cnt = sim.arena.count;
     for (let h = 0; h < cnt; h++) {
       const b = h * ST, k = xf[b + 7];
-      if (k === 2 || k === 5 || k === 6) put(k, xf[b], xf[b + 1], xf[b + 2], xf[b + 3], xf[b + 4], xf[b + 5], xf[b + 6], xf[b + 8], xf[b + 9], xf[b + 10]);
+      if (k === 2 || k === 5 || k === 6 || k === 7 || k === 8) put(k, xf[b], xf[b + 1], xf[b + 2], xf[b + 3], xf[b + 4], xf[b + 5], xf[b + 6], xf[b + 8], xf[b + 9], xf[b + 10]);
     }
   } else if (mode === 'net') {
     const s = snaps[snaps.length - 1];
@@ -465,9 +475,11 @@ function updateProps() {
   dummy.scale.setScalar(0); dummy.updateMatrix();
   for (let i = nb; i < lastBricks; i++) brickMesh.setMatrixAt(i, dummy.matrix);
   for (let i = nr; i < lastRags; i++) ragdollMesh.setMatrixAt(i, dummy.matrix);
-  lastBricks = nb; lastRags = nr;
+  for (let i = nw; i < lastWood; i++) woodMesh.setMatrixAt(i, dummy.matrix);
+  lastBricks = nb; lastRags = nr; lastWood = nw;
   brickMesh.instanceMatrix.needsUpdate = true;
   ragdollMesh.instanceMatrix.needsUpdate = true;
+  woodMesh.instanceMatrix.needsUpdate = true;
 }
 
 const stonePool = [];

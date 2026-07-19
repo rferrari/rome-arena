@@ -42,7 +42,7 @@ function mulberry32(seed) {
 
 export const SUBSTEPS = CONFIG.subSteps; // box3d solver sub-steps per tick
 
-export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom = false } = {}) {
+export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom = false, ctf = false } = {}) {
   if (!arena) throw new Error('createSim requires a physics arena (see physics/arena_api.js)');
   arena.reset(seed >>> 0);            // fresh box3d world + body tables
   arena.createGround(FIELD_W, FIELD_D); // static floor + perimeter walls
@@ -84,11 +84,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     return out;
   }
 
+  // count: explicit for CTF squads; otherwise scaled by the tier's unitScale.
   // opts: { y } spawns the whole unit elevated (battlement garrisons stand on real
   // wall bricks); { garrison } locks it in place — it holds the wall and shoots.
   function makeUnit(team, slot, typeKey, ax, az, facing, count, opts = {}) {
     const type = TYPES[typeKey];
-    // unit size scales with the tier (bigger battles); catapults keep their small crew
     const n = count ?? (typeKey === 'catapult' ? type.n : Math.max(4, Math.round(type.n * (CONFIG.unitScale || 1))));
     const u = {
       id: units.length, team, slot, typeKey, type, n0: n,
@@ -113,6 +113,29 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     return u;
   }
 
+  // ---- capture the flag: small squads + a flag at each team's base ----
+  let flags = null, scores = null;
+  const CTF = { pick: 2.6, cap: 4.0, target: 3, baseZ: 60, returnT: 15 };
+  if (ctf) {
+    // small readable squads: fast cavalry runners + a legion escort per player slot
+    const COMP_CTF = [['cavalry', 8], ['legion', 12]];
+    for (let team = 0; team < 2; team++) {
+      const dir = team === 0 ? 1 : -1, facing = team === 0 ? Math.PI : 0;
+      const blockW = Math.min(30, (FIELD_W - 10) / players[team]);
+      for (let p = 0; p < players[team]; p++) {
+        const bx = (p + 0.5 - players[team] / 2) * blockW;
+        COMP_CTF.forEach(([t, cnt], i) =>
+          makeUnit(team, p, t, bx + (i - (COMP_CTF.length - 1) / 2) * 8, dir * 44, facing, cnt));
+        sim.ai.add(`${team}:${p}`);
+      }
+    }
+    flags = [
+      { team: 0, hx: 0, hz: CTF.baseZ, x: 0, z: CTF.baseZ, carrier: null, state: 'base', dropT: 0 },
+      { team: 1, hx: 0, hz: -CTF.baseZ, x: 0, z: -CTF.baseZ, carrier: null, state: 'base', dropT: 0 },
+    ];
+    scores = [0, 0];
+    sim.flags = flags; sim.scores = scores; sim.ctf = true;
+  } else {
   // deployment: per player slot, 4 melee units front, archer+cavalry behind, catapult
   // rear. In fort mode armies form up further forward so each team's castle sits
   // behind them at ±backZ.
@@ -130,6 +153,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
       for (let k = 0; k < nCat; k++) makeUnit(team, p, 'catapult', bx + (k - (nCat - 1) / 2) * 7, dir * zC, facing);
       sim.ai.add(`${team}:${p}`); // owners claim their slot; unclaimed = AI
     }
+  }
   }
 
   // Castles in a V per team: two small watchtowers pushed FORWARD on the flanks and
@@ -243,6 +267,40 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     const d = Math.hypot(slotP.x - s.x, slotP.z - s.z);
     if (d > 0.15) { s.face = Math.atan2(slotP.x - s.x, slotP.z - s.z); setVel(s, slotP.x, slotP.z, s.speed * speedMult, dt); }
     else { s.face = u.facing; setStop(s); }
+  }
+
+  // ---- capture the flag: grab / carry / capture / drop-and-return ----
+  function ctfStep(dt) {
+    for (const f of flags) {
+      const grab = 1 - f.team; // the enemy team steals f and runs it to their base
+      if (f.state === 'carried') {
+        const c = f.carrier;
+        if (!c || c.state !== 0) { if (c) { f.x = c.x; f.z = c.z; } f.state = 'dropped'; f.dropT = 0; f.carrier = null; continue; }
+        f.x = c.x; f.z = c.z;
+        const base = flags[grab]; // grabber's home base
+        if (Math.hypot(f.x - base.hx, f.z - base.hz) < CTF.cap) {
+          scores[grab]++;
+          events.push(['note', `${teamName(grab)} captured the flag!  ${scores[0]}–${scores[1]}`]);
+          f.state = 'base'; f.x = f.hx; f.z = f.hz; f.carrier = null;
+          if (scores[grab] >= CTF.target && sim.winner === null) { sim.winner = grab; events.push(['over', grab]); }
+        }
+        continue;
+      }
+      // at base or dropped: nearest enemy within reach grabs it
+      let best = null, bd = CTF.pick * CTF.pick;
+      for (const s of soldiers) {
+        if (s.state !== 0 || s.unit.team !== grab) continue;
+        const d = (s.x - f.x) ** 2 + (s.z - f.z) ** 2;
+        if (d < bd) { bd = d; best = s; }
+      }
+      if (best) { f.carrier = best; f.state = 'carried'; events.push(['note', `${teamName(grab)} grabbed the ${teamName(f.team)} flag!`]); continue; }
+      if (f.state === 'dropped') { // owner touch returns it; else auto-return
+        f.dropT += dt;
+        let ret = f.dropT > CTF.returnT;
+        if (!ret) for (const s of soldiers) if (s.state === 0 && s.unit.team === f.team && (s.x - f.x) ** 2 + (s.z - f.z) ** 2 < CTF.pick * CTF.pick) { ret = true; break; }
+        if (ret) { f.state = 'base'; f.x = f.hx; f.z = f.hz; events.push(['note', `${teamName(f.team)} flag returned`]); }
+      }
+    }
   }
 
   // ---- spatial grid ----
@@ -468,6 +526,14 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         continue;
       }
 
+      // CTF flag carrier ignores combat and sprints the enemy flag back to base
+      if (ctf && flags[1 - u.team].carrier === s) {
+        const home = flags[u.team];
+        s.face = Math.atan2(home.hx - s.x, home.hz - s.z);
+        setVel(s, home.hx, home.hz, s.speed * 1.1, dt);
+        continue;
+      }
+
       const speedMult = u.stance && T.alt ? T.alt.speedMult : 1;
       const enemy = nearestEnemy(s, SEEK_RANGE);
       if (enemy) {
@@ -482,6 +548,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
           slotPos(u, s.slot, slotP);
           setVel(s, slotP.x, slotP.z, s.speed * speedMult, dt);
         } else setVel(s, enemy.x, enemy.z, s.speed * speedMult, dt);
+      } else if (ctf) {
+        // head for the enemy flag (its current position, even while carried by an ally)
+        const ef = flags[1 - u.team];
+        s.face = Math.atan2(ef.x - s.x, ef.z - s.z);
+        setVel(s, ef.x, ef.z, s.speed * speedMult, dt);
       } else {
         if (T.ranged) fireArrowMaybe(s, dt);
         // No enemy nearby: only an ATTACKING team marches (flow field, around walls
@@ -505,6 +576,8 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
       s.mom = Math.hypot(nx - s.x, nz - s.z) / dt;
       s.x = nx; s.z = nz;
     }
+
+    if (ctf) ctfStep(dt);
 
     // morale: regen when safe, pressure when depleted, break & rally
     for (const u of units) {

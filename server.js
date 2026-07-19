@@ -22,6 +22,7 @@ const PORT = arg('port', 8321);
 const TIER = setTier(argStr('tier', CONFIG.tier)); // low|mid|high|ultra scales the whole scene
 const PLAYERS = [Math.min(4, Math.max(1, arg('t0', CONFIG.players[0]))), Math.min(4, Math.max(1, arg('t1', CONFIG.players[1])))];
 const FORT = arg('fort', 0) > 0; // --fort 1 spawns per-team destructible castles
+const CTF = arg('ctf', 0) > 0;  // --ctf 1 = capture-the-flag mode (small squads + flags)
 const DOM = arg('dom', 0) > 0;  // --dom 1 = domination (3 capture zones, ticket bleed)
 const AI_TURN = arg('aiturn', 10); // seconds between LLM-general orders (mind Groq TPM limits)
 const AUTOSTART = arg('autostart', 0) > 0; // begin the battle with no human FIGHT press
@@ -39,7 +40,7 @@ let sim, state; // state: 'lobby' | 'playing'
 const arena = await createArena({ maxBodies: CONFIG.maxBodies }); // one box3d world, reused per battle
 
 function resetSim(seed = (Math.random() * 1e9) | 0) {
-  sim = createSim({ seed, players: PLAYERS, arena, fort: FORT, dom: DOM });
+  sim = createSim({ seed, players: PLAYERS, arena, fort: FORT, dom: DOM, ctf: CTF });
   state = 'lobby';
   for (const who of clients.values()) if (!who.spectator) sim.ai.delete(`${who.team}:${who.slot}`);
   // an LLM-commanded team is driven only by its general, not the built-in unit AI
@@ -92,6 +93,7 @@ function initMsg(who) {
     type: 'init', players: PLAYERS, you: who, state,
     ai: commanders.map((c) => (c ? c.model : null)), // LLM model per team (null = human/built-in AI)
     tier: CONFIG.tier, render: CONFIG.render,        // so the client matches the server's quality tier
+    ctf: CTF,
     units: sim.units.map((u) => ({
       id: u.id, team: u.team, slot: u.slot, type: u.typeKey,
       ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.n0,
@@ -229,7 +231,9 @@ setInterval(() => {
   tick++;
   const snap = snapshot();
   const ev = sim.drainEvents();
-  const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner, zones: sim.zones, tickets: sim.tickets });
+  // flags carry a live soldier ref (cyclic) — send only the plain render fields
+  const flags = sim.flags ? sim.flags.map((f) => ({ team: f.team, x: f.x, z: f.z, state: f.state })) : undefined;
+  const evMsg = JSON.stringify({ type: 'ev', e: ev, stats: sim.stats, counts: sim.counts, winner: sim.winner, flags, scores: sim.scores, zones: sim.zones, tickets: sim.tickets });
   for (const ws of clients.keys()) { ws.send(snap); ws.send(evMsg); }
   // record this frame (base64 snapshot + any decisions since last frame) for replay
   if (rec && state === 'playing') {

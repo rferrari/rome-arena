@@ -256,6 +256,7 @@ function sendCmd(cmd) {
   else if (cmd.type === 'order') sim.order(cmd.unitIds, { x: cmd.p0[0], z: cmd.p0[1] }, { x: cmd.p1[0], z: cmd.p1[1] });
   else if (cmd.type === 'stance') sim.toggleStance(cmd.unitIds);
   else if (cmd.type === 'files') sim.adjustFiles(cmd.unitIds, cmd.d);
+  else if (cmd.type === 'strike' && sim.strike) sim.strike(you.team ?? 0, cmd.p[0], cmd.p[1]);
 }
 
 // ---------------- rendering pools (built after init) ----------------
@@ -612,11 +613,17 @@ function handleEvent(ev) {
 const camTarget = new THREE.Vector3(0, 0, 35);
 let zoom = 95, viewDir = 1;
 const keys = {};
+let mouseX = innerWidth / 2, mouseY = innerHeight / 2; // for aimed abilities (B: strike)
+addEventListener('pointermove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'KeyT' && selected.size) sendCmd({ type: 'stance', unitIds: [...selected] });
   if (e.code === 'BracketLeft' && selected.size) sendCmd({ type: 'files', unitIds: [...selected], d: -1 });
   if (e.code === 'BracketRight' && selected.size) sendCmd({ type: 'files', unitIds: [...selected], d: 1 });
+  if (e.code === 'KeyB' && !(you && you.spectator)) { // wrath of the gods at the cursor
+    const p = groundPoint(mouseX, mouseY);
+    if (p) sendCmd({ type: 'strike', p: [p.x, p.z] });
+  }
 });
 addEventListener('keyup', (e) => (keys[e.code] = false));
 addEventListener('wheel', (e) => { zoom = clamp(zoom + e.deltaY * 0.08, 25, 170); });
@@ -946,7 +953,7 @@ function updateHud() {
   const fpsCol = fpsN >= 50 ? '#6d6' : fpsN >= 30 ? '#dd6' : '#e66';
   hud.innerHTML = `<b style="color:#e66">Red ${countsData[0]}</b> vs <b style="color:#68f">Blue ${countsData[1]}</b> — ${modeLabel}${selLine}` +
     `<br><span style="color:${fpsCol}">${fpsN} fps</span> · ${alive} soldiers · ${props} props` +
-    `<br>LMB drag: select · RMB drag: form line · RMB click: move · T: testudo/phalanx · [ ]: width · WASD pan · wheel zoom`;
+    `<br>LMB drag: select · RMB drag: form line · RMB click: move · T: testudo/phalanx · [ ]: width · B: fire strike · WASD pan · wheel zoom`;
 
   if (statsData) {
     const s = statsData;

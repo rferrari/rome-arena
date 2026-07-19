@@ -273,6 +273,35 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     tickets = [400, 400];
     sim.zones = zones; sim.tickets = tickets;
   }
+  // Wrath of the Gods: a called-in fire barrage (bonus ability, fort/dom battles) —
+  // five fire-pot explosions march in a line toward the enemy side. One per team on
+  // a long cooldown; humans aim it with B, the AI drops it on the densest formation.
+  let strikes = null;
+  if (fort || dom) {
+    strikes = { ready: [40, 40], queue: [] };
+    sim.strike = (team, x, z) => {
+      if (sim.winner !== null || sim.time < strikes.ready[team]) return false;
+      strikes.ready[team] = sim.time + 75;
+      strikes.queue.push({
+        x: clamp(x, -FIELD_W / 2 + 5, FIELD_W / 2 - 5),
+        z: clamp(z, -FIELD_D / 2 + 5, FIELD_D / 2 - 5),
+        dz: team === 0 ? -1 : 1, n: 5, t: 0,
+      });
+      events.push(['note', `${teamName(team)} calls the WRATH OF THE GODS!`]);
+      return true;
+    };
+  }
+  function strikeStep(dt) {
+    for (let i = strikes.queue.length - 1; i >= 0; i--) {
+      const q = strikes.queue[i];
+      q.t -= dt;
+      if (q.t > 0) continue;
+      fireBomb(q.x + (rng() - 0.5) * 4, q.z + (rng() - 0.5) * 4);
+      q.z += q.dz * 7; q.n--; q.t = 0.28;         // the barrage marches down the field
+      if (!q.n) strikes.queue.splice(i, 1);
+    }
+  }
+
   function domStep() {
     for (const z of zones) {
       let c0 = 0, c1 = 0;
@@ -576,6 +605,8 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     if (nav) { navT -= dt; if (navT <= 0) { navT = 1; recomputeNav(); } }
     // domination scoring at 1 Hz
     if (zones) { domT -= dt; if (domT <= 0) { domT = 1; domStep(); } }
+    // fire barrages in flight
+    if (strikes) strikeStep(dt);
 
     // Decide each soldier's desired velocity (+ melee) from last tick's positions,
     // writing intents into the shared buffer. box3d then integrates movement AND
@@ -847,6 +878,16 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     aiT -= dt;
     if (aiT <= 0) {
       aiT = 2;
+      // wrath of the gods: AI-run teams drop their barrage on the densest enemy unit
+      if (strikes) for (let t = 0; t < 2; t++) {
+        if (sim.time < strikes.ready[t]) continue;
+        let hasAI = false;
+        for (const k of sim.ai) if (k.startsWith(`${t}:`)) { hasAI = true; break; }
+        if (!hasAI) continue;
+        let best = null, bn = 14; // only worth it on a real formation
+        for (const e of units) if (e.team !== t && !e.garrison && e.alive > bn) { bn = e.alive; best = e; }
+        if (best) sim.strike(t, best.cx, best.cz);
+      }
       for (const u of units) {
         if (u.alive <= 0 || u.broken || u.garrison) continue; // garrisons never leave their wall
         if (!sim.ai.has(`${u.team}:${u.slot}`)) continue;

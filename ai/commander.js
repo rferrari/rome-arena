@@ -29,6 +29,7 @@ const SYSTEM = (team) =>
   `Reply with ONLY a single JSON object and nothing else — no reasoning, no markdown, no <think>:\n` +
   `{"orders":[{"unit":<id>,"x":<num>,"z":<num>,"stance":<0 or 1>}],"taunt":"<short line>"}\n` +
   `Issue AT MOST 5 orders per turn — command the key movements, not every unit. ` +
+  `You may also include "strike":{"x":<num>,"z":<num>} to call ONE devastating fire barrage on that point (long cooldown — spend it on massed enemies). ` +
   `Order a unit to march to (x,z) to attack, flank, defend, or besiege. Omit stance unless changing it. Be decisive and tactical.`;
 
 // Pull the orders object out of the reply. Tolerates reasoning models (gpt-oss,
@@ -47,7 +48,7 @@ export function parseOrders(text) {
       else if (c === '}' && --depth === 0) {
         try {
           const o = JSON.parse(clean.slice(i, j + 1));
-          if (Array.isArray(o.orders)) return { orders: o.orders, taunt: String(o.taunt || '') };
+          if (Array.isArray(o.orders)) return { orders: o.orders, taunt: String(o.taunt || ''), strike: o.strike };
         } catch { /* not this block */ }
         break; // move past this '{' to the next candidate
       }
@@ -98,5 +99,8 @@ export async function commandTeam(sim, team, cfg) {
     plan = parseOrders(await chat(cfg, messages, { maxTokens: 700 })); // keep tokens/turn low (rate limits)
   }
   const count = apply(sim, team, plan.orders);
+  // optional called-in fire barrage (cooldown-gated inside the sim)
+  if (plan.strike && Number.isFinite(plan.strike.x) && Number.isFinite(plan.strike.z) && sim.strike)
+    sim.strike(team, plan.strike.x, plan.strike.z);
   return { taunt: plan.taunt, count };
 }

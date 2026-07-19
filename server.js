@@ -212,6 +212,8 @@ Bun.serve({
         return;
       }
       if (state !== 'playing' || sim.winner !== null) return;
+      // wrath-of-the-gods strike: aimed at a ground point, gated by the team cooldown
+      if (m.type === 'strike' && Array.isArray(m.p) && sim.strike) { sim.strike(who.team, +m.p[0], +m.p[1]); return; }
       const owned = (m.unitIds || []).filter((i) => {
         const u = sim.units[i];
         return u && u.team === who.team && u.slot === who.slot;

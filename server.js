@@ -18,7 +18,7 @@ const argStr = (name, def) => {
 const PORT = arg('port', 8321);
 const TIER = setTier(argStr('tier', CONFIG.tier)); // low|mid|high|ultra scales the whole scene
 // tier sets the default army sizes; --t0/--t1 still override
-const PLAYERS = [Math.min(4, Math.max(1, arg('t0', CONFIG.players[0]))), Math.min(4, Math.max(1, arg('t1', CONFIG.players[1])))];
+const PLAYERS = [Math.min(8, Math.max(1, arg('t0', CONFIG.players[0]))), Math.min(8, Math.max(1, arg('t1', CONFIG.players[1])))];
 const FORT = arg('fort', 0) > 0; // --fort 1 spawns per-team destructible castles
 const DOM = arg('dom', 0) > 0;  // --dom 1 = domination (3 capture zones, ticket bleed)
 
@@ -34,7 +34,7 @@ function resetSim(seed = (Math.random() * 1e9) | 0) {
 resetSim(arg('seed', 42) | 0);
 
 function claimSlot() {
-  for (let slot = 0; slot < 4; slot++) {
+  for (let slot = 0; slot < 8; slot++) {
     for (let team = 0; team < 2; team++) {
       if (slot >= PLAYERS[team]) continue;
       if (sim.ai.has(`${team}:${slot}`)) {

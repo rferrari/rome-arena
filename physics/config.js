@@ -29,9 +29,9 @@ export const CONFIG = {
 // top), and each step multiplies unit sizes for real stress testing.
 const TIERS = {
   low:   { players: [4, 4], unitScale: 1.0, ragdolls: { cap: 48,  lifetime: 5 }, fortCourses: 5, render: { brickCap: 8000,  soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
-  mid:   { players: [4, 4], unitScale: 1.3, ragdolls: { cap: 80,  lifetime: 6 }, fortCourses: 6, render: { brickCap: 12000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
-  high:  { players: [4, 4], unitScale: 1.6, ragdolls: { cap: 110, lifetime: 7 }, fortCourses: 7, render: { brickCap: 18000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
-  ultra: { players: [4, 4], unitScale: 2.0, ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
+  mid:   { players: [6, 6], unitScale: 1.0, ragdolls: { cap: 80,  lifetime: 6 }, fortCourses: 6, render: { brickCap: 12000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
+  high:  { players: [8, 8], unitScale: 1.0, ragdolls: { cap: 110, lifetime: 7 }, fortCourses: 7, render: { brickCap: 18000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
+  ultra: { players: [8, 8], unitScale: 1.5, ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
 };
 
 // Apply a tier's numbers into CONFIG (server side); returns the resolved tier name.

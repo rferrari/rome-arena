@@ -11,9 +11,10 @@ export const CONFIG = {
   ragdolls: { cap: 48, lifetime: 5 },  // real jointed ragdolls on death (14 bodies each), pooled
   heroesPerTeam: 1,     // animated GLB champion models per team (rest instanced humanoids)
 
-  // fort (siege): THREE castles per team in a row at its backline, gates facing the
-  // enemy. stance decides whether a team holds its own forts ('defend') or storms the enemy's.
-  fort: { halfSize: 8, courses: 5, backZ: 60, navCell: 2, stance: ['attack', 'defend'] },
+  // fort (siege): each team fields a walled city. BOTH attack by default (mutual
+  // siege race — no predetermined loser); armies split into assault + home guard,
+  // and assaults STAGE at a standoff ring until artillery opens a breach.
+  fort: { halfSize: 8, courses: 5, backZ: 60, navCell: 2, stance: ['attack', 'attack'] },
 
   // client render knobs (sent to clients in `init` so they match the server tier)
   render: {
@@ -34,6 +35,8 @@ const TIERS = {
   // ultra: many more COLUMNS spread across the big field (lower crowd density) rather
   // than fatter units — looks huge and, thanks to fewer contacts, stays affordable
   ultra: { players: [12, 12], unitScale: 1.0, ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
+  // xt (EXTREME): 25% more columns than ultra — the stress ceiling
+  xt:    { players: [15, 15], unitScale: 1.0, ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
 };
 
 // Apply a tier's numbers into CONFIG (server side); returns the resolved tier name.

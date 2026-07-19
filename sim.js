@@ -184,14 +184,12 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         makeUnit(t, 0, 'archer', f.cx, gz, facing, nArch, { y: f.courses + 0.15, garrison: true });
       }
     }
-    // jointed siege engines: two trebuchets (motor-swung revolute arms) and one
-    // battering ram (heavy sled that breaches the bricks it slams) per team
-    engines = { trebs: [], rams: [] };
+    // jointed siege engines: two motor-swung trebuchets per team
+    engines = { trebs: [] };
     for (let t = 0; t < 2; t++) {
       const dir = t === 0 ? 1 : -1, yaw = t === 0 ? Math.PI : 0;
       for (const tx of [-22, 22])
         engines.trebs.push({ id: arena.addTrebuchet(tx, dir * 48, yaw), team: t, x: tx, z: dir * 48, cd: 3 + rng() * 5 });
-      engines.rams.push({ h: arena.addRam(0, dir * 36), team: t, t: rng() * 6 }); // clear lane between the blocks
     }
     arena.sync();
     nav = [createFlowField(FIELD_W, FIELD_D, F.navCell), createFlowField(FIELD_W, FIELD_D, F.navCell)];
@@ -584,8 +582,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
       }
     }
     // siege engines: trebuchets whip their jointed arms at the nearest standing
-    // enemy fort (half the shots are fire pots); the ram crew pounds toward the
-    // enemy gate, breaching whatever masonry it slams into.
+    // enemy fort (half the shots are fire pots).
     if (engines) {
       const TREB_RANGE = 115, TREB_CD = 9, TREB_H = 4.5;
       for (const tb of engines.trebs) {
@@ -600,14 +597,6 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         const tx = ef.cx + (rng() - 0.5) * 2 * ef.hs, tz = ef.cz + (rng() - 0.5) * 2 * ef.hs;
         const dur = 1.8 + fd / 35;
         arena.trebuchetFire(tb.id, (tx - tb.x) / dur, (0 - TREB_H) / dur + 0.5 * GRAVITY * dur, (tz - tb.z) / dur, 1.5);
-      }
-      const xfE = arena.transforms, STE = arena.XF_STRIDE;
-      for (const r of engines.rams) {
-        r.t += dt;
-        const o = r.h * STE, rx = xfE[o], rz = xfE[o + 2];
-        const dirv = nav[r.team].sample(rx, rz);
-        const pound = 2.2 + Math.max(0, Math.sin(r.t * 2.2)) * 2.6; // heave... SLAM rhythm
-        if (dirv) arena.setVelocity(r.h, dirv.x * pound, dirv.z * pound);
       }
     }
     // physics contacts: boulders plowing through crowds, fire pots detonating on

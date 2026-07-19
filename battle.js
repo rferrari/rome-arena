@@ -939,7 +939,13 @@ function updateHud() {
     });
     selLine = `<br>Selected: ${parts.join(' · ')}`;
   }
+  // live telemetry: render FPS + how much is on screen. fps colour = green/amber/red.
+  const alive = (countsData[0] || 0) + (countsData[1] || 0);
+  const props = lastBricks + lastRags + lastWood;
+  const fpsN = Math.round(fps);
+  const fpsCol = fpsN >= 50 ? '#6d6' : fpsN >= 30 ? '#dd6' : '#e66';
   hud.innerHTML = `<b style="color:#e66">Red ${countsData[0]}</b> vs <b style="color:#68f">Blue ${countsData[1]}</b> — ${modeLabel}${selLine}` +
+    `<br><span style="color:${fpsCol}">${fpsN} fps</span> · ${alive} soldiers · ${props} props` +
     `<br>LMB drag: select · RMB drag: form line · RMB click: move · T: testudo/phalanx · [ ]: width · WASD pan · wheel zoom`;
 
   if (statsData) {
@@ -1044,12 +1050,13 @@ function buildReplayUI() {
 // ?replay=replays/xxx.json opens the review viewer instead of a live battle
 const replayParam = new URLSearchParams(location.search).get('replay');
 if (replayParam) startReplay(replayParam); else connect();
-let last = performance.now(), acc = 0;
+let last = performance.now(), acc = 0, fps = 0;
 const STEP = 1 / 60;
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
+  if (dt > 0) fps = fps ? fps * 0.92 + (1 / dt) * 0.08 : 1 / dt; // smoothed render FPS
 
   if (mode === 'solo' && sim && phase === 'playing') {
     acc += dt;

@@ -883,7 +883,7 @@ function updateInstances(dt) {
         if (st && st.state !== 2) {
           S.visible = true;
           S.position.set(st.x, 0, st.z);
-          S.rotation.y = st.face + Math.PI; // KayKit rigs face -Z
+          S.rotation.y = st.face; // face the direction of travel
           const sp = Math.hypot(st.x - V.prevX, st.z - V.prevZ);
           V.prevX = st.x; V.prevZ = st.z;
           setCharAnim(V, st.state === 1 ? 'death' : sp > 0.02 ? 'walk' : 'idle');

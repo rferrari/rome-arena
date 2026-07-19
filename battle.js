@@ -810,6 +810,7 @@ function updateInstances(dt) {
     if (vs) { // rendered as a GLB gladiator instead of a capsule
       const st = vrmState[vs.team][vs.type];
       if (st) st[vs.k] = { x: rs.x, z: rs.z, face: rs.face, state: rs.state };
+      if (rs.state === 0) { const c = unitCentroids[j]; c.x += rs.x; c.z += rs.z; c.n++; } // count for selection/orders
       hideHuman(i);
       const wl = weaponIdx[i]; if (wl >= 0) weaponMesh.setMatrixAt(wl, _zeroM);
       continue;

@@ -19,7 +19,7 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
   const fn = {
     reset: c('arena_reset', null, ['number', 'number']),
     createGround: c('arena_create_ground', null, ['number', 'number']),
-    addSoldier: c('arena_add_soldier', 'number', ['number', 'number']),
+    addSoldier: c('arena_add_soldier', 'number', ['number', 'number', 'number']),
     addBrick: c('arena_add_brick', 'number', ['number', 'number', 'number', 'number', 'number', 'number', 'number']),
     addBoulder: c('arena_add_boulder', 'number', ['number', 'number', 'number', 'number', 'number', 'number', 'number']),
     remove: c('arena_remove', null, ['number']),
@@ -30,6 +30,8 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     contactCount: c('arena_contact_count', 'number', []),
     contactsPtr: c('arena_contacts_ptr', 'number', []),
     raycast: c('arena_raycast', 'number', ['number', 'number', 'number', 'number', 'number', 'number']),
+    explode: c('arena_explode', null, ['number', 'number', 'number', 'number', 'number']),
+    impulse: c('arena_impulse', null, ['number', 'number', 'number', 'number']),
     spawnRagdoll: c('arena_spawn_ragdoll', null, ['number', 'number', 'number', 'number', 'number', 'number']),
     setRagdollParams: c('arena_set_ragdoll_params', null, ['number', 'number']),
     renderCount: c('arena_render_count', 'number', []),
@@ -56,7 +58,7 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     XF_STRIDE,
     reset(s = seed) { fn.reset(s, maxBodies); lastBuffer = null; sync(); },
     createGround: (w, d) => fn.createGround(w, d),
-    addSoldier: (x, z) => fn.addSoldier(x, z),
+    addSoldier: (x, z, y = 0) => fn.addSoldier(x, y, z), // optional y: spawn on a wall crest
     addBrick: (x, y, z, hx, hy, hz, dyn) => fn.addBrick(x, y, z, hx, hy, hz, dyn ? 1 : 0),
     addBoulder: (x, y, z, vx, vy, vz, r) => fn.addBoulder(x, y, z, vx, vy, vz, r),
     remove: (h) => fn.remove(h),
@@ -70,6 +72,10 @@ export async function createArena({ maxBodies = 20000, seed = 1 } = {}) {
     contacts() { sync(); return { count: fn.contactCount(), pairs: contactView }; },
     // closest-hit ray; returns the hit body handle or -1.
     raycast: (x0, y0, z0, x1, y1, z1) => fn.raycast(x0, y0, z0, x1, y1, z1),
+    // radial-impulse explosion at (x,y,z) — physically blasts bodies outward
+    explode: (x, y, z, radius, impulse = 6) => fn.explode(x, y, z, radius, impulse),
+    // linear impulse on one body (e.g. cavalry charge knockback)
+    impulse: (h, ix, iy, iz) => fn.impulse(h, ix, iy, iz),
     // spawn a jointed ragdoll (pooled/capped) at (x,y,z) flung at (vx,vy,vz).
     spawnRagdoll: (x, y, z, vx, vy, vz) => fn.spawnRagdoll(x, y, z, vx, vy, vz),
     setRagdollParams: (cap, life) => fn.setRagdollParams(cap, life),

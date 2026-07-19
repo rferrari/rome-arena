@@ -236,11 +236,13 @@ void arena_create_ground(float w, float d) {
 
 // Upright dynamic capsule; rotation fully locked (facing is owned by JS), so it
 // stays standing and slides via velocity intents while still colliding/jostling.
+// y > 0 spawns the soldier elevated (e.g. garrison archers standing on wall crests —
+// they rest on the static bricks and tumble down with them when the wall is breached).
 EMSCRIPTEN_KEEPALIVE
-int arena_add_soldier(float x, float z) {
+int arena_add_soldier(float x, float y, float z) {
   b3BodyDef bd = b3DefaultBodyDef();
   bd.type = b3_dynamicBody;
-  bd.position = (b3Pos){ x, 0.0f, z };
+  bd.position = (b3Pos){ x, y, z };
   bd.motionLocks.angularX = true;
   bd.motionLocks.angularY = true;
   bd.motionLocks.angularZ = true;
@@ -331,10 +333,18 @@ void arena_step(float dt, int subSteps) {
   for (int i = 0; i < ce.beginCount && g_contactCount < MAX_CONTACTS; i++) {
     int ha = (int)(intptr_t) b3Body_GetUserData(b3Shape_GetBody(ce.beginEvents[i].shapeIdA));
     int hb = (int)(intptr_t) b3Body_GetUserData(b3Shape_GetBody(ce.beginEvents[i].shapeIdB));
+    int ka = g_kind[ha], kb = g_kind[hb];
+    // flying rubble: only fast rubble-vs-soldier pairs matter (falling masonry
+    // CRUSHES soldiers); everything else rubble touches is noise — drop it.
+    if (ka == KIND_RUBBLE || kb == KIND_RUBBLE) {
+      int rub = ka == KIND_RUBBLE ? ha : hb, oth = ka == KIND_RUBBLE ? kb : ka;
+      if (oth != KIND_SOLDIER) continue;
+      b3Vec3 v = b3Body_GetLinearVelocity(g_bodies[rub]);
+      if (v.x * v.x + v.y * v.y + v.z * v.z < 16.0f) continue; // < 4 m/s: harmless
+    }
     g_contacts[g_contactCount * 2] = ha;
     g_contacts[g_contactCount * 2 + 1] = hb;
     g_contactCount++;
-    int ka = g_kind[ha], kb = g_kind[hb];
     if ((ka == KIND_BOULDER && kb == KIND_BRICK) || (ka == KIND_BRICK && kb == KIND_BOULDER)) {
       int brick = (ka == KIND_BRICK) ? ha : hb;
       b3WorldTransform t = b3Body_GetTransform(g_bodies[brick]);
@@ -404,6 +414,9 @@ static void do_breach(float x, float y, float z, float r) {
     const float d = sqrtf(dx * dx + dz * dz) + 0.01f;
     b3Body_ApplyLinearImpulseToCenter(g_bodies[h], (b3Vec3){ dx / d * 40.0f, 25.0f, dz / d * 40.0f }, true);
     g_kind[h] = KIND_RUBBLE;
+    // flying rubble reports contacts so it can crush soldiers (filtered in the drain)
+    b3ShapeId sh;
+    if (b3Body_GetShapes(g_bodies[h], &sh, 1) == 1) b3Shape_EnableContactEvents(sh, true);
   }
 }
 
@@ -411,6 +424,26 @@ static void do_breach(float x, float y, float z, float r) {
 // buffer of length 2*arena_contact_count(). JS maps handles -> game objects.
 EMSCRIPTEN_KEEPALIVE int arena_contact_count(void) { return g_contactCount; }
 EMSCRIPTEN_KEEPALIVE int* arena_contacts_ptr(void) { return g_contacts; }
+
+// Radial-impulse explosion (fire pots): physically blasts soldiers, rubble, and
+// corpses outward. Gameplay damage is applied by JS; this is the physics kick.
+EMSCRIPTEN_KEEPALIVE
+void arena_explode(float x, float y, float z, float radius, float impulsePerArea) {
+  b3ExplosionDef ed = b3DefaultExplosionDef();
+  ed.position = (b3Pos){ x, y, z };
+  ed.radius = radius;
+  ed.falloff = radius * 0.6f;
+  ed.impulsePerArea = impulsePerArea;
+  ed.maskBits = CAT_SOLDIER | CAT_BRICK | CAT_BOULDER | CAT_RAGDOLL;
+  b3World_Explode(g_world, &ed);
+}
+
+// Impulse on one body (cavalry charge impact knocking a soldier flying).
+EMSCRIPTEN_KEEPALIVE
+void arena_impulse(int h, float ix, float iy, float iz) {
+  if (h < 0 || h >= g_count || g_kind[h] == KIND_DEAD) return;
+  b3Body_ApplyLinearImpulseToCenter(g_bodies[h], (b3Vec3){ ix, iy, iz }, true);
+}
 
 // Closest-hit ray cast; returns the hit body's handle, or -1 on miss. Used for
 // arrow impacts (a vertical ray at the landing column picks the soldier hit, and

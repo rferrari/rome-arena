@@ -86,7 +86,7 @@ function snapshot() {
     v.setInt16(o, Math.round(s.x * 100), true);
     v.setInt16(o + 2, Math.round(s.z * 100), true);
     v.setUint8(o + 4, Math.round(((s.face % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) / (Math.PI * 2) * 255));
-    v.setUint8(o + 5, s.state | (s.fightT > 0 ? 4 : 0) | (s.unit.broken ? 8 : 0) | (s.unit.stance ? 16 : 0));
+    v.setUint8(o + 5, s.state | (s.fightT > 0 ? 4 : 0) | (s.unit.broken ? 8 : 0) | (s.unit.stance ? 16 : 0) | (s.down > 0 ? 32 : 0));
     o += 6;
   }
   for (const u of sim.units) {

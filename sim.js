@@ -60,6 +60,8 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     blockRanged: { n: 0, dmg: 0 },  // ranged dmg absorbed by shield wall
     arrows: { fired: 0, hits: 0 },
     boulders: { fired: 0, kills: 0 },
+    firepots: 0,                    // exploding shots detonated
+    crushed: 0,                     // soldiers killed by flying masonry
     routs: 0, rallies: 0,
   };
   const sim = {
@@ -82,14 +84,16 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     return out;
   }
 
-  function makeUnit(team, slot, typeKey, ax, az, facing, count) {
+  // opts: { y } spawns the whole unit elevated (battlement garrisons stand on real
+  // wall bricks); { garrison } locks it in place — it holds the wall and shoots.
+  function makeUnit(team, slot, typeKey, ax, az, facing, count, opts = {}) {
     const type = TYPES[typeKey];
     // unit size scales with the tier (bigger battles); catapults keep their small crew
     const n = count ?? (typeKey === 'catapult' ? type.n : Math.max(4, Math.round(type.n * (CONFIG.unitScale || 1))));
     const u = {
       id: units.length, team, slot, typeKey, type, n0: n,
-      ax, az, facing, files: type.files, stance: 0,
-      morale: 100, broken: false, alive: n,
+      ax, az, facing, files: Math.min(type.files, n), stance: 0,
+      morale: 100, broken: false, alive: n, garrison: !!opts.garrison,
       cx: ax, cz: az, catCd: CAT_CD * rng(), soldiers: [],
     };
     const p = { x: 0, z: 0 };
@@ -99,9 +103,9 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
         id: soldiers.length, unit: u, slot: i,
         x: p.x, z: p.z, face: facing, hp: type.hp,
         cd: rng(), cdR: rng() * 2, state: 0 /* 0 alive 1 dying 2 gone */,
-        deathT: 0, fightT: 0, mom: 0,
+        deathT: 0, fightT: 0, mom: 0, down: 0,
         speed: type.speed * (0.9 + rng() * 0.2),
-        h: arena.addSoldier(p.x, p.z), // box3d capsule body handle
+        h: arena.addSoldier(p.x, p.z, opts.y || 0), // box3d capsule body handle
       };
       u.soldiers.push(s); soldiers.push(s); soldierByHandle.set(s.h, s);
     }
@@ -128,19 +132,31 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     }
   }
 
-  // THREE castles per team in a triangle at its backline, gates facing the enemy.
-  // Each team's stance decides whether it holds its own forts ('defend') or storms
-  // the enemy's ('attack', pathing to the NEAREST enemy castle via a flow field).
+  // Castles in a V per team: two small watchtowers pushed FORWARD on the flanks and
+  // one big king castle back-centre. Each fort's battlements carry an archer garrison
+  // standing on the real wall bricks — breach the wall and the garrison comes down
+  // with it. stance decides holding your own forts vs storming the enemy's.
   // Default off so open-field test_sim is unaffected.
   let nav = null, teamForts = null, teamStance = null, navT = 0;
   if (fort) {
-    const F = CONFIG.fort, hs = F.halfSize, bz = F.backZ;
+    const F = CONFIG.fort;
     teamStance = F.stance;
-    // three castles in a row along each team's backline (behind its army), gates
-    // facing the enemy; kept clear of the deployment zone so nothing spawns inside.
-    const layout = (dir) => [-48, 0, 48].map((cx) => ({ cx, cz: dir * bz, gd: -dir }));
+    const layout = (dir) => [
+      { cx: -58, cz: dir * 12, hs: 5, courses: F.courses, gd: -dir },      // flank tower (near midfield)
+      { cx: 58, cz: dir * 12, hs: 5, courses: F.courses, gd: -dir },       // flank tower (near midfield)
+      { cx: 0, cz: dir * 56, hs: 10, courses: F.courses + 3, gd: -dir },   // king castle (back centre)
+    ];
     teamForts = [layout(1), layout(-1)];
-    for (let t = 0; t < 2; t++) for (const f of teamForts[t]) arena.buildFort(f.cx, f.cz, hs, F.courses, f.gd);
+    for (let t = 0; t < 2; t++) for (const f of teamForts[t]) arena.buildFort(f.cx, f.cz, f.hs, f.courses, f.gd);
+    // battlement garrisons: a single row of archers on each fort's solid rear wall
+    // crest (the front wall is split by the gate), facing the enemy over the courtyard
+    for (let t = 0; t < 2; t++) {
+      const dir = t === 0 ? 1 : -1, facing = t === 0 ? Math.PI : 0;
+      for (const f of teamForts[t]) {
+        const nArch = f.hs >= 10 ? 6 : 3; // fits inside the wall span, clear of corner towers
+        makeUnit(t, 0, 'archer', f.cx, f.cz + dir * f.hs, facing, nArch, { y: f.courses + 0.15, garrison: true });
+      }
+    }
     arena.sync();
     nav = [createFlowField(FIELD_W, FIELD_D, F.navCell), createFlowField(FIELD_W, FIELD_D, F.navCell)];
     sim.teamForts = teamForts;
@@ -151,11 +167,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
   // so each cell points to the nearest one). Blocks standing walls; breached rubble
   // (kind 6) opens a path. Recomputed periodically so breaches reroute the assault.
   function recomputeNav() {
-    const xf = arena.transforms, ST = arena.XF_STRIDE, n = arena.count, hs = CONFIG.fort.halfSize;
+    const xf = arena.transforms, ST = arena.XF_STRIDE, n = arena.count;
     for (let t = 0; t < 2; t++) {
       nav[t].clearBlocked();
       for (let h = 0; h < n; h++) { const b = h * ST; if (xf[b + 7] === 2) nav[t].blockWorld(xf[b], xf[b + 2]); }
-      const goals = teamForts[1 - t].map((f) => ({ x: f.cx, z: f.cz - (f.cz >= 0 ? 1 : -1) * (hs - 2) })); // just inside each gate
+      const goals = teamForts[1 - t].map((f) => ({ x: f.cx, z: f.cz - (f.cz >= 0 ? 1 : -1) * (f.hs - 2) })); // just inside each gate
       nav[t].compute(goals);
     }
   }
@@ -238,6 +254,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
       const b = dmg * (T.charge - 1);
       dmg += b; stats.charge.n++; stats.charge.dmg += b;
       s.mom = 0;
+      // physical impact: the victim is knocked flying and staggers back up
+      if (target.h >= 0) {
+        arena.impulse(target.h, Math.sin(s.face) * 18, 6, Math.cos(s.face) * 18);
+        target.down = Math.max(target.down, 1.2);
+      }
     }
     if (s.unit.stance && T.alt?.dmgMult && T.alt.dmgMult > 1) {
       const b = dmg * (T.alt.dmgMult - 1);
@@ -253,6 +274,22 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
       const d = Math.hypot(s.x - x, s.z - z);
       if (d < CAT_AOE) stats.boulders.kills += damage(s, 120 * (1 - d / CAT_AOE), 'ranged');
     });
+  }
+
+  // fire pot: a real radial-impulse explosion — soldiers, corpses, and rubble are
+  // physically blasted outward (b3World_Explode); survivors are knocked down.
+  const POT_R = 9, POT_DMG = 90;
+  function fireBomb(x, z) {
+    events.push(['firebomb', x, z]);
+    stats.firepots++;
+    arena.explode(x, 1.0, z, POT_R, 8);
+    for (const s of soldiers) { // full scan: rare event, radius exceeds the grid reach
+      if (s.state !== 0) continue;
+      const d = Math.hypot(s.x - x, s.z - z);
+      if (d >= POT_R) continue;
+      stats.boulders.kills += damage(s, POT_DMG * (1 - d / POT_R), 'ranged');
+      if (s.state === 0) s.down = Math.max(s.down, 1 + rng());
+    }
   }
 
   function enemyCentroid(team) {
@@ -348,6 +385,19 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
       const u = s.unit, T = u.type;
       s.fightT = Math.max(0, s.fightT - dt);
 
+      if (s.down > 0) { // knocked flying by an impact — sprawled, then gets back up
+        s.down -= dt;
+        setStop(s);
+        continue;
+      }
+
+      if (u.garrison) { // battlement archers: hold the wall crest and rain arrows
+        if (T.ranged) fireArrowMaybe(s, dt);
+        s.face = u.facing;
+        setStop(s);
+        continue;
+      }
+
       if (u.broken) { // rout: run for your own map edge (piles at the wall, then flees)
         setVel(s, s.x, u.team === 0 ? FIELD_D : -FIELD_D, s.speed * 1.15, dt);
         continue;
@@ -430,9 +480,8 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
         let efc = null, fd = Infinity;
         if (teamForts) for (const f of teamForts[1 - u.team]) { const d = Math.hypot(f.cx - u.ax, f.cz - u.az); if (d < fd) { fd = d; efc = f; } }
         if (efc && fd > CAT_MIN_RANGE && fd < CAT_RANGE) {
-          const hs = CONFIG.fort.halfSize;
-          tx = efc.cx + (rng() - 0.5) * 2 * hs;
-          tz = efc.cz + (rng() - 0.5) * 2 * hs;
+          tx = efc.cx + (rng() - 0.5) * 2 * efc.hs;
+          tz = efc.cz + (rng() - 0.5) * 2 * efc.hs;
           bd = fd;
         } else {
           let best = null; bd = CAT_RANGE;
@@ -450,30 +499,41 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
           const vx = (tx - u.ax) / dur, vz = (tz - u.az) / dur;
           const vy = (0 - BOULDER_LAUNCH_Y) / dur + 0.5 * GRAVITY * dur;
           const h = arena.addBoulder(u.ax, BOULDER_LAUNCH_Y, u.az, vx, vy, vz, BOULDER_R);
-          boulders.push({ h, born: sim.time, hits: 0 });
+          boulders.push({ h, born: sim.time, hits: 0, fire: rng() < 0.35 }); // ~1/3 are fire pots
           stats.boulders.fired++;
           events.push(['shot', u.ax, u.az, tx, tz, dur]); // cosmetic arc for the client
         }
       }
     }
-    // boulder damage: real rocks plow through crowds — each begin-touch with a
-    // soldier is a hit; hitting terrain/wall detonates an AoE splash at the rock.
-    if (boulders.length) {
+    // physics contacts: boulders plowing through crowds, fire pots detonating on
+    // impact, and fast masonry rubble CRUSHING the soldiers it lands on.
+    {
       const { count, pairs } = arena.contacts();
       const xf = arena.transforms, ST = arena.XF_STRIDE;
       const live = new Set(boulders.map((b) => b.h));
       for (let i = 0; i < count; i++) {
         const a = pairs[i * 2], b = pairs[i * 2 + 1];
+        const ka = xf[a * ST + 7], kb = xf[b * ST + 7];
+        if (ka === 6 || kb === 6) { // flying rubble vs soldier (speed-filtered in WASM)
+          const victim = soldierByHandle.get(ka === 6 ? b : a);
+          if (victim && victim.state === 0) {
+            stats.crushed += damage(victim, 70 + rng() * 40, 'melee');
+            if (victim.state === 0) victim.down = Math.max(victim.down, 1.5);
+          }
+          continue;
+        }
         let bh = -1, oh = -1;
         if (live.has(a)) { bh = a; oh = b; } else if (live.has(b)) { bh = b; oh = a; }
         if (bh < 0) continue;
+        const bl = boulders.find((x) => x.h === bh);
         const victim = soldierByHandle.get(oh);
-        if (victim) { stats.boulders.kills += damage(victim, BOULDER_DMG, 'ranged'); boulders.find((x) => x.h === bh).hits++; }
-        else { // hit terrain, wall, or rubble — splash at the rock (walls breach in WASM)
+        if (victim) { stats.boulders.kills += damage(victim, BOULDER_DMG, 'ranged'); bl.hits++; }
+        else { // hit terrain, wall, or rubble — detonate/splash at the rock (walls breach in WASM)
           const k = xf[oh * ST + 7];
           if (k === 4 || k === 2 || k === 6) {
-            explode(xf[bh * ST], xf[bh * ST + 2]);
-            const bl = boulders.find((x) => x.h === bh); if (bl) bl.born = -1e9; // mark spent
+            if (bl && bl.fire) fireBomb(xf[bh * ST], xf[bh * ST + 2]);
+            else explode(xf[bh * ST], xf[bh * ST + 2]);
+            if (bl) bl.born = -1e9; // mark spent
           }
         }
       }
@@ -509,7 +569,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false } = 
     if (aiT <= 0) {
       aiT = 2;
       for (const u of units) {
-        if (u.alive <= 0 || u.broken) continue;
+        if (u.alive <= 0 || u.broken || u.garrison) continue; // garrisons never leave their wall
         if (!sim.ai.has(`${u.team}:${u.slot}`)) continue;
         if (u.typeKey === 'catapult') { // creep into range if nothing to shoot
           let best = null, bd = Infinity;

@@ -28,17 +28,15 @@ export const CONFIG = {
   },
 };
 
-// Scene tiers — a smooth VRM ramp. Every tier is 100% VRM (vrmCap is above the top
-// count), so tiers scale the actual VRM load evenly: ~2 more columns per step,
-// roughly +1000 avatars/side each. `low` (~1k/side) is the comfortable baseline;
-// `xt` (~3k/side, ~6k clones) is the ceiling stress. Castle detail/ragdolls ramp too.
-//                players   per-side  clones
+// Scene tiers — a light->heavy VRM ramp (both columns and unit size grow). low is a
+// small skirmish (~310/side) so it stays smooth; xt is the ceiling stress (~3.1k/side,
+// ~6.3k clones). Every tier is 100% VRM (vrmCap above the top count).
 const TIERS = {
-  low:   { players: [4, 4],   unitScale: 1.0, ragdolls: { cap: 48,  lifetime: 5 }, fortCourses: 5, render: { brickCap: 8000,  soldier: 'humanoid', shadows: false, pixelRatio: 2 } }, // ~1050  ~2.1k
-  mid:   { players: [6, 6],   unitScale: 1.0, ragdolls: { cap: 64,  lifetime: 6 }, fortCourses: 6, render: { brickCap: 12000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } }, // ~1580  ~3.2k
-  high:  { players: [8, 8],   unitScale: 1.0, ragdolls: { cap: 90,  lifetime: 6 }, fortCourses: 7, render: { brickCap: 18000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } }, // ~2100  ~4.2k
-  ultra: { players: [10, 10], unitScale: 1.0, ragdolls: { cap: 110, lifetime: 7 }, fortCourses: 8, render: { brickCap: 24000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } }, // ~2650  ~5.3k
-  xt:    { players: [12, 12], unitScale: 1.0, ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } }, // ~3150  ~6.3k
+  low:   { players: [4, 4],   unitScale: 0.25, ragdolls: { cap: 48,  lifetime: 5 }, fortCourses: 5, render: { brickCap: 8000,  soldier: 'humanoid', shadows: false, pixelRatio: 2 } }, // ~310/side
+  mid:   { players: [6, 6],   unitScale: 0.45, ragdolls: { cap: 64,  lifetime: 6 }, fortCourses: 6, render: { brickCap: 12000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } }, // ~760/side
+  high:  { players: [8, 8],   unitScale: 0.65, ragdolls: { cap: 90,  lifetime: 6 }, fortCourses: 7, render: { brickCap: 18000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } }, // ~1400/side
+  ultra: { players: [10, 10], unitScale: 0.85, ragdolls: { cap: 110, lifetime: 7 }, fortCourses: 8, render: { brickCap: 24000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } }, // ~2260/side
+  xt:    { players: [12, 12], unitScale: 1.0,  ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } }, // ~3150/side
 };
 
 // Apply a tier's numbers into CONFIG (server side); returns the resolved tier name.

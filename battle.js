@@ -458,6 +458,7 @@ function buildVRMArmy(need) {
         for (let k = 0; k < count; k++) {
           const s = skeletonClone(src);
           s.scale.setScalar(scale);
+          s.rotation.order = 'YXZ'; // yaw then tilt, so the death fall is relative to facing
           s.visible = false;
           s.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
           scene.add(s); vrmScenes.push(s);
@@ -555,10 +556,8 @@ function updateProps() {
   const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
     dummy.position.set(x, y, z);
     dummy.quaternion.set(qx, qy, qz, qw);
-    if (kind === 5) { // ragdoll bone: capsule, x/z = radius, y = half-length
-      if (nr >= ragdollMesh.count) return;
-      dummy.scale.set(hx, hy, hz);
-      dummy.updateMatrix(); ragdollMesh.setMatrixAt(nr++, dummy.matrix);
+    if (kind === 5) { // box3d capsule ragdoll — suppressed: the VRM avatars do their own
+      return;         // death collapse, so we skip the capsule corpses to avoid doubles
     } else if (kind === 7 || kind === 8) { // siege engine timber (trebuchet frame/arm, ram)
       if (nw >= woodMesh.count) return;
       dummy.scale.set(hx * 2, hy * 2, hz * 2);
@@ -833,7 +832,7 @@ function updateInstances(dt) {
     const vs = vrmSlot.get(i);
     if (vs) { // rendered as a VRM avatar instead of a capsule
       const st = vrmState[vs.team][vs.type];
-      if (st) st[vs.k] = { x: rs.x, z: rs.z, face: rs.face, state: rs.state };
+      if (st) st[vs.k] = { x: rs.x, z: rs.z, face: rs.face, state: rs.state, deathT: rs.deathT || 0 };
       hideHuman(i);
       const wl = weaponIdx[i]; if (wl >= 0) weaponMesh.setMatrixAt(wl, _zeroM);
       continue;
@@ -904,14 +903,20 @@ function updateInstances(dt) {
       for (let k = 0; k < pool.length; k++) {
         const V = pool[k], st = states[k];
         const S = V.scene;
-        if (st && st.state === 0) {
+        if (st && st.state === 0) {          // alive: walk/idle
           S.visible = true;
           S.position.set(st.x, 0, st.z);
-          S.rotation.y = st.face + Math.PI; // face the direction of travel
+          S.rotation.set(0, st.face + Math.PI, 0);
           const sp = Math.hypot(st.x - V.prevX, st.z - V.prevZ);
           V.prevX = st.x; V.prevZ = st.z;
           animateVRMClone(V, sp > 0.02, dt);
-        } else S.visible = false;
+        } else if (st && st.state === 1) {   // dying: collapse onto the ground (VRM ragdoll)
+          S.visible = true;
+          S.position.set(st.x, 0, st.z);
+          const p = Math.min(1, st.deathT / 0.7);       // fall over ~0.7s
+          S.rotation.set(-1.55 * p, st.face + Math.PI, 0);
+          animateVRMClone(V, false, dt);                // limbs go slack
+        } else S.visible = false;           // gone
         states[k] = null;
       }
     }

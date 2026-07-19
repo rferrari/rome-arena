@@ -528,13 +528,23 @@ function updateDom() {
 }
 
 let lastBricks = 0, lastRags = 0, lastWood = 0;
+const RAG_N = 14;            // box3d CreateHuman bones per ragdoll (pelvis is bone 0)
+let ragPelvis = [];         // [x,y,z] of each active ragdoll's pelvis (drives GLB corpse motion)
+function nearestPelvis(p) { // the active ragdoll pelvis closest to point p, or null
+  let best = null, bd = 36; // within 6 m
+  for (const g of ragPelvis) { const d = (g[0] - p[0]) ** 2 + (g[2] - p[2]) ** 2; if (d < bd) { bd = d; best = g; } }
+  return best;
+}
 function updateProps() {
-  let nb = 0, nr = 0, nw = 0;
+  let nb = 0, nr = 0, nw = 0, nRag = 0;
+  ragPelvis.length = 0;
   const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
     dummy.position.set(x, y, z);
     dummy.quaternion.set(qx, qy, qz, qw);
-    if (kind === 5) { // box3d capsule ragdoll — suppressed: GLB gladiators play their
-      return;         // own Death_A death clip, so skip the capsules to avoid doubles
+    if (kind === 5) { // box3d ragdoll bone — capsule suppressed, but the pelvis (every
+      if (nRag % RAG_N === 0) ragPelvis.push([x, y, z]); // 14th bone) drives the GLB corpse so explosions fling it
+      nRag++;
+      return;
     } else if (kind === 7 || kind === 8) { // siege engine timber (trebuchet frame/arm, ram)
       if (nw >= woodMesh.count) return;
       dummy.scale.set(hx * 2, hy * 2, hz * 2);
@@ -890,14 +900,22 @@ function updateInstances(dt) {
       for (let k = 0; k < pool.length; k++) {
         const V = pool[k], st = states[k];
         const S = V.scene;
-        if (st && st.state !== 2) {
+        if (st && st.state === 0) {         // alive: walk/idle at the soldier position
           S.visible = true;
           S.position.set(st.x, 0, st.z);
-          S.rotation.y = st.face; // face the direction of travel
+          S.rotation.y = st.face;
           const sp = Math.hypot(st.x - V.prevX, st.z - V.prevZ);
           V.prevX = st.x; V.prevZ = st.z;
-          setCharAnim(V, st.state === 1 ? 'death' : sp > 0.02 ? 'walk' : 'idle');
-        } else S.visible = false;
+          setCharAnim(V, sp > 0.02 ? 'walk' : 'idle');
+          V.pel = null;
+        } else if (st && st.state === 1) {  // dying: play Death_A, but ride the box3d ragdoll's
+          S.visible = true;                 // pelvis so explosions/boulders physically fling the corpse
+          const near = nearestPelvis(V.pel || [st.x, 0, st.z]);
+          if (near) { S.position.set(near[0], Math.max(0, near[1] - 0.9), near[2]); V.pel = near; }
+          else S.position.set(st.x, 0, st.z);
+          S.rotation.y = st.face;
+          setCharAnim(V, 'death');
+        } else { S.visible = false; V.pel = null; }
         V.mixer.update(dt);
         states[k] = null;
       }
@@ -1166,8 +1184,8 @@ function frame(now) {
 
   updateCamera(dt);
   if (mode) {
+    updateProps();       // build ragPelvis first so dying GLBs ride this frame's ragdolls
     updateInstances(dt);
-    updateProps();
     updateFlags();
     updateDom();
     updateProjectiles(dt);

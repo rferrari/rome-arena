@@ -616,8 +616,10 @@ let zoom = 95, viewDir = 1;
 const keys = {};
 let mouseX = innerWidth / 2, mouseY = innerHeight / 2; // for aimed abilities (B: strike)
 addEventListener('pointermove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
+const PAN_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
+  if (PAN_KEYS.has(e.code)) e.preventDefault(); // arrows control the camera, not page scroll
   if (e.code === 'KeyT' && selected.size) sendCmd({ type: 'stance', unitIds: [...selected] });
   if (e.code === 'BracketLeft' && selected.size) sendCmd({ type: 'files', unitIds: [...selected], d: -1 });
   if (e.code === 'BracketRight' && selected.size) sendCmd({ type: 'files', unitIds: [...selected], d: 1 });
@@ -630,10 +632,13 @@ addEventListener('keyup', (e) => (keys[e.code] = false));
 addEventListener('wheel', (e) => { zoom = clamp(zoom + e.deltaY * 0.08, 25, 170); });
 function updateCamera(dt) {
   const s = zoom * 0.6 * dt;
-  if (keys.KeyW || keys.ArrowUp) camTarget.z -= s * viewDir;
-  if (keys.KeyS || keys.ArrowDown) camTarget.z += s * viewDir;
-  if (keys.KeyA || keys.ArrowLeft) camTarget.x -= s * viewDir;
-  if (keys.KeyD || keys.ArrowRight) camTarget.x += s * viewDir;
+  if (keys.KeyW) camTarget.z -= s * viewDir;                       // WASD pans
+  if (keys.KeyS) camTarget.z += s * viewDir;
+  if (keys.KeyA || keys.ArrowLeft) camTarget.x -= s * viewDir;     // A / ← pan left
+  if (keys.KeyD || keys.ArrowRight) camTarget.x += s * viewDir;    // D / → pan right
+  const zs = zoom * 1.2 * dt;                                      // ↑/↓ zoom in/out
+  if (keys.ArrowUp) zoom = clamp(zoom - zs, 25, 170);
+  if (keys.ArrowDown) zoom = clamp(zoom + zs, 25, 170);
   camTarget.x = clamp(camTarget.x, -FIELD_W / 2, FIELD_W / 2);
   camTarget.z = clamp(camTarget.z, -FIELD_D / 2, FIELD_D / 2);
   camera.position.set(camTarget.x, zoom, camTarget.z + zoom * 0.55 * viewDir);
@@ -967,7 +972,7 @@ function updateHud() {
   hud.innerHTML = `<b style="color:#e66">Red ${countsData[0]}</b> vs <b style="color:#68f">Blue ${countsData[1]}</b> — ${modeLabel}${selLine}` +
     `<br><span style="color:${fpsCol}">${fpsN} fps</span> · ${alive} soldiers · ${props} props` +
     strikeLine() +
-    `<br>LMB drag: select · RMB drag: form line · RMB click: move · T: testudo/phalanx · [ ]: width · WASD pan · wheel zoom`;
+    `<br>LMB drag: select · RMB drag: form line · RMB click: move · T: testudo/phalanx · [ ]: width · WASD/←→ pan · ↑↓ zoom`;
 
   if (statsData) {
     const s = statsData;

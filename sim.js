@@ -92,7 +92,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
     const n = count ?? (typeKey === 'catapult' ? type.n : Math.max(4, Math.round(type.n * (CONFIG.unitScale || 1))));
     const u = {
       id: units.length, team, slot, typeKey, type, n0: n,
-      ax, az, facing, files: Math.min(type.files, n), stance: 0,
+      ax, az, facing, files: Math.max(2, Math.min(opts.files || type.files, n)), stance: 0,
       morale: 100, broken: false, alive: n, garrison: !!opts.garrison,
       cx: ax, cz: az, catCd: CAT_CD * rng(), soldiers: [],
     };
@@ -139,25 +139,31 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
   // deployment: per player slot, 4 melee units front, archer+cavalry behind, catapult
   // rear. In fort mode armies form up further forward so each team's castle sits
   // behind them at ±backZ.
-  const zM = fort ? 48 : 75, zB = fort ? 61 : 92, zC = fort ? 70 : 108; // scaled for the deep field
-  const nCat = fort ? 3 : 1; // a battery of catapults in siege mode
+  // Each player is a compact combined-arms BATTLE GROUP: the 4 melee units in a 2x2
+  // block, archer+cavalry a rank behind, catapults at the rear. Unit rank-width is
+  // FITTED to its column slot so nothing spawns overlapping, and lanes are left
+  // between groups (cavalry can sweep them). Alternate groups sit half a rank deeper.
+  const nCat = fort ? 3 : 1;
+  const frontZ0 = fort ? 30 : 60; // front rank's distance from centre
   for (let team = 0; team < 2; team++) {
     const dir = team === 0 ? 1 : -1, facing = team === 0 ? Math.PI : 0;
-    const blockW = Math.min(46, (FIELD_W - 10) / players[team]);
+    const blockW = Math.min(48, (FIELD_W - 20) / players[team]);
+    const perCol = (blockW * 0.6) / 2;                                  // 2 columns per group
+    const fFiles = clamp(Math.floor(perCol / SPACING), 3, 8);          // fit rank width to the slot
+    const bFiles = clamp(Math.floor(perCol / SPACING), 3, 12);
+    const legN = Math.max(4, Math.round(48 * (CONFIG.unitScale || 1)));
+    const rowGap = Math.ceil(legN / fFiles) * SPACING + 3;             // one unit-row deep + a gap
     for (let p = 0; p < players[team]; p++) {
       const bx = (p + 0.5 - players[team] / 2) * blockW;
-      // Each player is a distinct combined-arms BATTLE GROUP, not part of one flat
-      // line: units cluster within ~62% of the block (leaving lanes between groups),
-      // and alternate groups sit ~11m deeper (checkerboard) so the army engages in
-      // staggered waves and cavalry can sweep the gaps — less of a single-wave rush.
-      const zg = (p % 2 ? 11 : 0) * dir;                 // checkerboard depth stagger
-      const fw = (blockW * 0.62) / COMP_FRONT.length;    // tighter spread -> gaps between groups
-      const bw = (blockW * 0.62) / COMP_BACK.length;
-      COMP_FRONT.forEach((t, i) =>
-        makeUnit(team, p, t, bx + (i + 0.5 - COMP_FRONT.length / 2) * fw, dir * zM + zg, facing));
-      COMP_BACK.forEach((t, i) =>
-        makeUnit(team, p, t, bx + (i + 0.5 - COMP_BACK.length / 2) * bw, dir * zB + zg, facing));
-      for (let k = 0; k < nCat; k++) makeUnit(team, p, 'catapult', bx + (k - (nCat - 1) / 2) * 7, dir * zC + zg, facing);
+      const zg = (p % 2 ? rowGap * 0.5 : 0) * dir;                     // gentle checkerboard stagger
+      COMP_FRONT.forEach((t, i) => {                                    // 2x2 melee block
+        const col = i % 2, row = (i / 2) | 0;
+        makeUnit(team, p, t, bx + (col - 0.5) * perCol, dir * (frontZ0 + row * rowGap) + zg, facing, undefined, { files: fFiles });
+      });
+      COMP_BACK.forEach((t, i) =>                                       // archer + cavalry a rank behind
+        makeUnit(team, p, t, bx + (i - 0.5) * perCol, dir * (frontZ0 + 2 * rowGap) + zg, facing, undefined, { files: bFiles }));
+      for (let k = 0; k < nCat; k++)                                    // catapults at the rear
+        makeUnit(team, p, 'catapult', bx + (k - (nCat - 1) / 2) * 7, dir * (frontZ0 + 3 * rowGap) + zg, facing);
       sim.ai.add(`${team}:${p}`); // owners claim their slot; unclaimed = AI
     }
   }

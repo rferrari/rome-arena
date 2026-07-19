@@ -20,8 +20,9 @@ export const CONFIG = {
   render: {
     brickCap: 6000,      // instanced brick cap (fort + rubble)
     soldier: 'humanoid', // 'humanoid' articulated figures, or 'capsule' for max perf
-    vrmType: 'legion',   // this unit type renders as VRM avatars (rest stay instanced)
-    vrmCap: 8,           // VRM avatars PER TEAM — start small, raise for more (skinned = heavy)
+    vrmType: 'legion',   // (unused on the glb branch — the whole army is GLB)
+    vrmCap: 220,         // GLB avatars PER TEAM — the whole low-tier army; excess falls back to capsules
+    charScale: 0.9,      // GLB gladiator size (tune to match the ranks; 1.0 ≈ model's native height)
     shadows: false,
     pixelRatio: 2,
   },
@@ -31,7 +32,7 @@ export const CONFIG = {
 // render together. Rebalanced upward: "low" is now a full 4v4 (what used to be the
 // top), and each step multiplies unit sizes for real stress testing.
 const TIERS = {
-  low:   { players: [4, 4], unitScale: 1.0, ragdolls: { cap: 48,  lifetime: 5 }, fortCourses: 5, render: { brickCap: 8000,  soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
+  low:   { players: [2, 2], unitScale: 0.4, ragdolls: { cap: 48,  lifetime: 5 }, fortCourses: 5, render: { brickCap: 8000,  soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
   mid:   { players: [6, 6], unitScale: 1.0, ragdolls: { cap: 80,  lifetime: 6 }, fortCourses: 6, render: { brickCap: 12000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
   high:  { players: [8, 8],   unitScale: 1.0, ragdolls: { cap: 110, lifetime: 7 }, fortCourses: 7, render: { brickCap: 18000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
   // ultra: many more COLUMNS spread across the big field (lower crowd density) rather

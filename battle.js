@@ -307,13 +307,18 @@ function buildRenderers() {
   soldierUnitIdx.length = 0;
   meta.units.forEach((u, j) => { for (let i = 0; i < u.n; i++) soldierUnitIdx[u.start + i] = j; });
 
-  // assign the first VRM_CAP soldiers of VRM_TYPE per team to VRM avatar slots
+  // assign EVERY soldier (all types) to a GLB avatar slot, up to VRM_CAP per team;
+  // count how many of each (team,type) so the clone pools can be sized
   vrmSlot.clear();
-  const vcount = [0, 0];
+  const vcount = [0, 0], need = [{}, {}];
   for (const u of meta.units) {
-    if (u.type !== VRM_TYPE) continue;
-    for (let i = 0; i < u.n && vcount[u.team] < VRM_CAP; i++) vrmSlot.set(u.start + i, { team: u.team, k: vcount[u.team]++ });
+    for (let i = 0; i < u.n && vcount[u.team] < VRM_CAP; i++) {
+      const k = need[u.team][u.type] || 0;
+      vrmSlot.set(u.start + i, { team: u.team, type: u.type, k });
+      need[u.team][u.type] = k + 1; vcount[u.team]++;
+    }
   }
+  buildGLBArmy(need);
 
   const nS = meta.nS;
   const mk = (geo, count) => {
@@ -399,38 +404,57 @@ for (const m of [brickMesh, ragdollMesh, woodMesh]) {
   m.castShadow = false;
   scene.add(m);
 }
-// ---------------- character army (one unit type rendered as GLB gladiators) ----------------
-// The chosen unit type is rendered as pooled GLB CLONES (SkeletonUtils shares
-// geometry/textures, so N clones ≈ 1 model's memory) animated by the model's own
-// embedded Idle / Walking_A / Death_A clips via a per-clone AnimationMixer. Low-poly
-// KayKit rigs — far lighter than VRM. Everything else stays instanced. Start small
-// via vrmCap and raise it. (Named vrm* to share the plumbing with the vrm branch.)
-const CHAR_MODEL = ['./assets/mobs/gladiators/knight.glb', './assets/mobs/gladiators/barbarian.glb'];
-const VRM_TYPE = CONFIG.render.vrmType || 'legion';   // which unit type becomes a character
-let VRM_CAP = CONFIG.render.vrmCap ?? 8;              // avatars per team (start small)
-const vrmPool = [[], []];              // team -> [ {scene, mixer, actions, current, prevX, prevZ} ]
-const vrmSlot = new Map();             // soldier index -> {team, k}
-const vrmState = [[], []];             // team -> [ {x,z,face,state,down,fighting} | null ]
-(function loadCharArmy() {
-  const loader = new GLTFLoader();
-  loader.setMeshoptDecoder(MeshoptDecoder); // KayKit GLBs use EXT_meshopt_compression
-  for (let team = 0; team < 2; team++) {
-    loader.loadAsync(CHAR_MODEL[team]).then((gltf) => {
-      for (let k = 0; k < VRM_CAP; k++) {
-        const s = skeletonClone(gltf.scene);             // shares geometry + textures
-        s.scale.setScalar(1.6);                          // soldier-sized (matches the capsule troops)
-        s.visible = false;
-        s.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
-        scene.add(s);
-        const mixer = new THREE.AnimationMixer(s);
-        const act = (n) => { const c = THREE.AnimationClip.findByName(gltf.animations, n); return c ? mixer.clipAction(c) : null; };
-        const actions = { idle: act('Idle'), walk: act('Walking_A'), death: act('Death_A') };
-        if (actions.idle) actions.idle.play();
-        vrmPool[team].push({ scene: s, mixer, actions, current: 'idle', prevX: 0, prevZ: 0 });
-      }
-    }).catch((e) => console.warn('GLB failed to load:', CHAR_MODEL[team], e));
+// ---------------- character army (whole army rendered as GLB gladiators) ----------------
+// Every soldier (up to vrmCap/team) is a pooled GLB CLONE. Each UNIT TYPE gets its own
+// model, and Red = living gladiators vs Blue = skeletons for instant team ID. Clones
+// (SkeletonUtils) share each model's geometry/textures; per-clone AnimationMixer plays
+// the embedded Idle / Walking_A / Death_A clips. KayKit GLBs (EXT_meshopt_compression).
+const _G = './assets/mobs/gladiators/';
+const CHAR_MODEL = [
+  { legion: 'knight', spear: 'barbarian', pike: 'knight', archer: 'rogue', cavalry: 'barbarian', catapult: 'mage' },       // Red — living
+  { legion: 'skeleton_warrior', spear: 'skeleton_warrior', pike: 'skeleton_warrior', archer: 'skeleton_rogue', cavalry: 'skeleton_minion', catapult: 'skeleton_mage' }, // Blue — undead
+].map((o) => { const m = {}; for (const k in o) m[k] = _G + o[k] + '.glb'; return m; });
+const CHAR_SCALE = CONFIG.render.charScale ?? 1.0;   // troop-sized; tune to match the ranks
+let VRM_CAP = CONFIG.render.vrmCap ?? 8;             // GLB avatars per team (whole army, capped)
+let vrmPool = [{}, {}];                 // team -> { type: [ {scene,mixer,actions,current,prevX,prevZ} ] }
+const vrmSlot = new Map();              // soldier index -> {team, type, k}
+let vrmState = [{}, {}];                // team -> { type: [state|null] }
+let glbScenes = [];                     // every clone in the scene (for teardown on rebuild)
+const gltfCache = new Map();            // path -> Promise<gltf> (load each model once)
+function loadGLB(path) {
+  if (!gltfCache.has(path)) {
+    const l = new GLTFLoader();
+    l.setMeshoptDecoder(MeshoptDecoder);
+    gltfCache.set(path, l.loadAsync(path));
   }
-})();
+  return gltfCache.get(path);
+}
+// (re)build the clone pools for the current battle — `need[team][type] = count`
+function buildGLBArmy(need) {
+  for (const s of glbScenes) if (s.parent) s.parent.remove(s);
+  glbScenes = []; vrmPool = [{}, {}]; vrmState = [{}, {}];
+  for (let team = 0; team < 2; team++) {
+    for (const type in need[team]) {
+      const count = need[team][type];
+      const pool = [], states = new Array(count).fill(null);
+      vrmPool[team][type] = pool; vrmState[team][type] = states;
+      loadGLB(CHAR_MODEL[team][type] || CHAR_MODEL[team].legion).then((gltf) => {
+        for (let k = 0; k < count; k++) {
+          const s = skeletonClone(gltf.scene);
+          s.scale.setScalar(CHAR_SCALE);
+          s.visible = false;
+          s.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
+          scene.add(s); glbScenes.push(s);
+          const mixer = new THREE.AnimationMixer(s);
+          const act = (n) => { const c = THREE.AnimationClip.findByName(gltf.animations, n); return c ? mixer.clipAction(c) : null; };
+          const actions = { idle: act('Idle'), walk: act('Walking_A'), death: act('Death_A') };
+          if (actions.idle) actions.idle.play();
+          pool.push({ scene: s, mixer, actions, current: 'idle', prevX: 0, prevZ: 0 });
+        }
+      }).catch((e) => console.warn('GLB failed to load:', CHAR_MODEL[team][type], e));
+    }
+  }
+}
 function setCharAnim(V, name) {
   if (V.current === name || !V.actions[name]) return;
   const to = V.actions[name]; to.reset().setEffectiveWeight(1).play();
@@ -439,8 +463,7 @@ function setCharAnim(V, name) {
 }
 // jump the camera to a team's character army (C key)
 function focusLeader(t) {
-  const V = vrmPool[t] && vrmPool[t].find((x) => x.scene.visible);
-  if (V) { camTarget.set(V.scene.position.x, 0, V.scene.position.z); zoom = 34; }
+  for (const type in vrmPool[t]) { const V = vrmPool[t][type].find((x) => x.scene.visible); if (V) { camTarget.set(V.scene.position.x, 0, V.scene.position.z); zoom = 34; return; } }
 }
 window.__focusLeader = focusLeader;
 
@@ -785,8 +808,9 @@ function updateInstances(dt) {
     const isCav = u.type === 'cavalry';
 
     const vs = vrmSlot.get(i);
-    if (vs && vrmPool[vs.team][vs.k]) { // rendered as a VRM avatar instead of a capsule
-      vrmState[vs.team][vs.k] = { x: rs.x, z: rs.z, face: rs.face, state: rs.state, down: !!rs.down, fighting: rs.fighting };
+    if (vs) { // rendered as a GLB gladiator instead of a capsule
+      const st = vrmState[vs.team][vs.type];
+      if (st) st[vs.k] = { x: rs.x, z: rs.z, face: rs.face, state: rs.state };
       hideHuman(i);
       const wl = weaponIdx[i]; if (wl >= 0) weaponMesh.setMatrixAt(wl, _zeroM);
       continue;
@@ -850,22 +874,24 @@ function updateInstances(dt) {
   for (const m of [hTorso, hHead, hLeg, hArm]) { if (colorDirty) m.instanceColor.needsUpdate = true; m.instanceMatrix.needsUpdate = true; }
   weaponMesh.instanceMatrix.needsUpdate = true;
 
-  // place & animate each VRM avatar at its soldier (walk when moving, hide when dead)
+  // place & animate each GLB gladiator at its soldier (walk when moving, hide when dead)
   for (let t = 0; t < 2; t++) {
-    const pool = vrmPool[t], states = vrmState[t];
-    for (let k = 0; k < pool.length; k++) {
-      const V = pool[k], st = states[k];
-      const S = V.scene;
-      if (st && st.state !== 2) {
-        S.visible = true;
-        S.position.set(st.x, 0, st.z);
-        S.rotation.y = st.face + Math.PI; // KayKit rigs face -Z
-        const sp = Math.hypot(st.x - V.prevX, st.z - V.prevZ);
-        V.prevX = st.x; V.prevZ = st.z;
-        setCharAnim(V, st.state === 1 ? 'death' : sp > 0.02 ? 'walk' : 'idle');
-      } else S.visible = false;
-      V.mixer.update(dt);
-      states[k] = null;
+    for (const type in vrmPool[t]) {
+      const pool = vrmPool[t][type], states = vrmState[t][type];
+      for (let k = 0; k < pool.length; k++) {
+        const V = pool[k], st = states[k];
+        const S = V.scene;
+        if (st && st.state !== 2) {
+          S.visible = true;
+          S.position.set(st.x, 0, st.z);
+          S.rotation.y = st.face + Math.PI; // KayKit rigs face -Z
+          const sp = Math.hypot(st.x - V.prevX, st.z - V.prevZ);
+          V.prevX = st.x; V.prevZ = st.z;
+          setCharAnim(V, st.state === 1 ? 'death' : sp > 0.02 ? 'walk' : 'idle');
+        } else S.visible = false;
+        V.mixer.update(dt);
+        states[k] = null;
+      }
     }
   }
 

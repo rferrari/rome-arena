@@ -815,10 +815,18 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, dom
         const o = tw.h * STE, rx = xfE[o], rz = xfE[o + 2];
         let cap = null, cd = Infinity; // nearest enemy capital (skip solid towers)
         for (const f of teamForts[1 - tw.team]) if (!f.tower) { const dd = Math.hypot(f.cx - rx, f.cz - rz); if (dd < cd) { cd = dd; cap = f; } }
-        if (cap && cd < cap.hs + 6) { // reached the wall: drop the bridge + tear a big breach
+        // stall detection: the tower can't pass walls, so once it JAMS against one
+        // (driven but barely moving) near the enemy city, that's where it drops.
+        const moved = Math.hypot(rx - (tw.px ?? rx), rz - (tw.pz ?? rz));
+        tw.px = rx; tw.pz = rz;
+        tw.stall = moved < 0.06 ? (tw.stall || 0) + dt : 0;
+        const atWall = cap && cd < cap.hs + 6;                 // reached the castle proper
+        const jammed = cap && cd < cap.hs + 55 && tw.stall > 0.6; // stuck on an outer wall
+        if (atWall || jammed) { // drop the drawbridge + tear a big breach where it stands
           arena.towerDrive(tw.id, 0, 0);
           arena.towerDrop(tw.id);
-          arena.breach(rx + ((cap.cx - rx) / cd) * 5, 1, rz + ((cap.cz - rz) / cd) * 5, 11);
+          const dx = (cap.cx - rx) / (cd || 1), dz = (cap.cz - rz) / (cd || 1);
+          arena.breach(rx + dx * 5, 1, rz + dz * 5, 12); // breach the wall just ahead of the tower
           assault[tw.team] = 'storm'; // the tower's breach sounds the assault immediately
           events.push(['note', `${teamName(tw.team)} siege tower breaches the wall — storm!`]);
           tw.dropped = true;

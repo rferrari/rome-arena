@@ -33,11 +33,11 @@ export const CONFIG = {
 // -> xt 12v12 (~3.1k/side). GLB is light (low-poly), so this scales much better than
 // VRM. Castle detail + ragdoll caps ramp alongside.
 const TIERS = {
-  low:   { players: [4, 4],   unitScale: 1.0, ragdolls: { cap: 48,  lifetime: 5 }, fortCourses: 5, render: { brickCap: 8000,  soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
-  mid:   { players: [6, 6],   unitScale: 1.0, ragdolls: { cap: 64,  lifetime: 6 }, fortCourses: 6, render: { brickCap: 12000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
-  high:  { players: [8, 8],   unitScale: 1.0, ragdolls: { cap: 90,  lifetime: 6 }, fortCourses: 7, render: { brickCap: 18000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
-  ultra: { players: [10, 10], unitScale: 1.0, ragdolls: { cap: 110, lifetime: 7 }, fortCourses: 8, render: { brickCap: 24000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
-  xt:    { players: [12, 12], unitScale: 1.0, ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
+  low:   { players: [4, 4],   unitScale: 0.25, ragdolls: { cap: 48,  lifetime: 5 }, fortCourses: 5, render: { brickCap: 8000,  soldier: 'humanoid', shadows: false, pixelRatio: 2 } }, // ~270/side
+  mid:   { players: [6, 6],   unitScale: 0.45, ragdolls: { cap: 64,  lifetime: 6 }, fortCourses: 6, render: { brickCap: 12000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } }, // ~700/side
+  high:  { players: [8, 8],   unitScale: 0.65, ragdolls: { cap: 90,  lifetime: 6 }, fortCourses: 7, render: { brickCap: 18000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } }, // ~1350/side
+  ultra: { players: [10, 10], unitScale: 0.85, ragdolls: { cap: 110, lifetime: 7 }, fortCourses: 8, render: { brickCap: 24000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } }, // ~2200/side
+  xt:    { players: [12, 12], unitScale: 1.0,  ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } }, // ~3150/side
 };
 
 // Apply a tier's numbers into CONFIG (server side); returns the resolved tier name.

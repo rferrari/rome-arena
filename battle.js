@@ -532,10 +532,8 @@ function updateProps() {
   const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
     dummy.position.set(x, y, z);
     dummy.quaternion.set(qx, qy, qz, qw);
-    if (kind === 5) { // ragdoll bone: capsule, x/z = radius, y = half-length
-      if (nr >= ragdollMesh.count) return;
-      dummy.scale.set(hx, hy, hz);
-      dummy.updateMatrix(); ragdollMesh.setMatrixAt(nr++, dummy.matrix);
+    if (kind === 5) { // box3d capsule ragdoll — suppressed: GLB gladiators play their
+      return;         // own Death_A death clip, so skip the capsules to avoid doubles
     } else if (kind === 7 || kind === 8) { // siege engine timber (trebuchet frame/arm, ram)
       if (nw >= woodMesh.count) return;
       dummy.scale.set(hx * 2, hy * 2, hz * 2);

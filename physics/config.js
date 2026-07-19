@@ -21,25 +21,23 @@ export const CONFIG = {
     brickCap: 6000,      // instanced brick cap (fort + rubble)
     soldier: 'humanoid', // 'humanoid' articulated figures, or 'capsule' for max perf
     vrmType: 'legion',   // (unused on the glb branch — the whole army is GLB)
-    vrmCap: 220,         // GLB avatars PER TEAM — the whole low-tier army; excess falls back to capsules
+    vrmCap: 4000,        // above every tier's per-side count — the WHOLE army is GLB at every tier
     charScale: 0.9,      // GLB gladiator size (tune to match the ranks; 1.0 ≈ model's native height)
     shadows: false,
     pixelRatio: 2,
   },
 };
 
-// Scene tiers — scale army size (players + unitScale), ragdolls, castle detail and
-// render together. Rebalanced upward: "low" is now a full 4v4 (what used to be the
-// top), and each step multiplies unit sizes for real stress testing.
+// Scene tiers — a smooth GLB ramp. Every tier is 100% GLB (vrmCap is above the top
+// count), +2 columns / ~+520 avatars per side per step. low 4v4 (~1k/side) baseline
+// -> xt 12v12 (~3.1k/side). GLB is light (low-poly), so this scales much better than
+// VRM. Castle detail + ragdoll caps ramp alongside.
 const TIERS = {
-  low:   { players: [2, 2], unitScale: 0.4, ragdolls: { cap: 48,  lifetime: 5 }, fortCourses: 5, render: { brickCap: 8000,  soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
-  mid:   { players: [6, 6], unitScale: 1.0, ragdolls: { cap: 80,  lifetime: 6 }, fortCourses: 6, render: { brickCap: 12000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
-  high:  { players: [8, 8],   unitScale: 1.0, ragdolls: { cap: 110, lifetime: 7 }, fortCourses: 7, render: { brickCap: 18000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
-  // ultra: many more COLUMNS spread across the big field (lower crowd density) rather
-  // than fatter units — looks huge and, thanks to fewer contacts, stays affordable
-  ultra: { players: [12, 12], unitScale: 1.0, ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
-  // xt (EXTREME): 25% more columns than ultra — the stress ceiling
-  xt:    { players: [15, 15], unitScale: 1.0, ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
+  low:   { players: [4, 4],   unitScale: 1.0, ragdolls: { cap: 48,  lifetime: 5 }, fortCourses: 5, render: { brickCap: 8000,  soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
+  mid:   { players: [6, 6],   unitScale: 1.0, ragdolls: { cap: 64,  lifetime: 6 }, fortCourses: 6, render: { brickCap: 12000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
+  high:  { players: [8, 8],   unitScale: 1.0, ragdolls: { cap: 90,  lifetime: 6 }, fortCourses: 7, render: { brickCap: 18000, soldier: 'humanoid', shadows: false, pixelRatio: 2 } },
+  ultra: { players: [10, 10], unitScale: 1.0, ragdolls: { cap: 110, lifetime: 7 }, fortCourses: 8, render: { brickCap: 24000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
+  xt:    { players: [12, 12], unitScale: 1.0, ragdolls: { cap: 128, lifetime: 8 }, fortCourses: 8, render: { brickCap: 30000, soldier: 'humanoid', shadows: true,  pixelRatio: 2 } },
 };
 
 // Apply a tier's numbers into CONFIG (server side); returns the resolved tier name.

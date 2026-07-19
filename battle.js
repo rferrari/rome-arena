@@ -422,6 +422,11 @@ const VRM_BONES = [
   ['leftLowerLeg', 'x', -1, 0], ['rightLowerLeg', 'x', 1, 0],
   ['leftUpperArm', 'z', 1, 1.15], ['rightUpperArm', 'z', -1, -1.15],
 ];
+// box3d CreateHuman bone order -> VRM humanoid bone (for physics-driven ragdoll)
+const RAG_BONES = ['hips', 'spine', 'chest', 'upperChest', 'neck', 'head',
+  'leftUpperLeg', 'leftLowerLeg', 'rightUpperLeg', 'rightLowerLeg',
+  'leftUpperArm', 'leftLowerArm', 'rightUpperArm', 'rightLowerArm'];
+const RAG_N = RAG_BONES.length; // 14, matches box3d bone_count
 const _AX = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
 const _q = new THREE.Quaternion(), _box = new THREE.Box3(), _sz = new THREE.Vector3();
 let vrmPool = [{}, {}];                 // team -> { type: [ {scene,bones,phase,prevX,prevZ} ] }
@@ -438,7 +443,7 @@ function loadVRM(path) {
       VRMUtils.rotateVRM0(vrm);
       VRMUtils.removeUnnecessaryJoints(vrm.scene);
       const rawName = {};
-      for (const [bn] of VRM_BONES) { const r = vrm.humanoid.getRawBoneNode(bn); if (r) rawName[bn] = r.name; }
+      for (const bn of RAG_BONES) { const r = vrm.humanoid.getRawBoneNode(bn); if (r) rawName[bn] = r.name; }
       _box.setFromObject(vrm.scene); _box.getSize(_sz);          // auto-scale to a fixed height
       const scale = _sz.y > 0.01 ? VRM_HEIGHT / _sz.y : 1;
       return { scene: vrm.scene, rawName, scale };
@@ -467,7 +472,8 @@ function buildVRMArmy(need) {
             const node = rawName[bn] && s.getObjectByName(rawName[bn]);
             if (node) bones[bn] = { node, rest: node.quaternion.clone(), ax, dir, off };
           }
-          pool.push({ scene: s, bones, phase: 0, prevX: 0, prevZ: 0 });
+          const rag = RAG_BONES.map((bn) => (rawName[bn] ? s.getObjectByName(rawName[bn]) : null));
+          pool.push({ scene: s, bones, rag, phase: 0, prevX: 0, prevZ: 0, bound: null });
         }
       }).catch((e) => console.warn('VRM failed to load:', VRM_MODEL[team][type], e));
     }
@@ -490,6 +496,61 @@ function focusLeader(t) {
   for (const type in vrmPool[t]) { const V = vrmPool[t][type].find((x) => x.scene.visible); if (V) { camTarget.set(V.scene.position.x, 0, V.scene.position.z); zoom = 34; return; } }
 }
 window.__focusLeader = focusLeader;
+
+// ---- physics ragdoll: drive a dying VRM from the box3d CreateHuman bones ----
+// The box3d ragdoll's 14 world bone transforms arrive in the prop stream (kind 5),
+// contiguous and in bone order, so we group them by 14 and bind each to the nearest
+// dead VRM, then retarget: each VRM bone follows its box3d bone's rotation DELTA from
+// the bind pose (calibration-free), with the hips driving world position.
+let ragCollect = [];   // flat [x,y,z,qx,qy,qz,qw] per streamed ragdoll bone (this frame)
+let ragGroups = [];    // [{ pelvis:[x,y,z], q:[[x,y,z,w]*14] }]
+const _rq = new THREE.Quaternion(), _rt = new THREE.Quaternion(), _rp = new THREE.Quaternion();
+const _rv = new THREE.Vector3(), _rpp = new THREE.Vector3(), _rps = new THREE.Vector3();
+function buildRagGroups() {
+  ragGroups.length = 0;
+  const n = (ragCollect.length / 7) | 0;
+  for (let g = 0; g + RAG_N <= n; g += RAG_N) {
+    const q = [];
+    for (let b = 0; b < RAG_N; b++) { const o = (g + b) * 7; q.push([ragCollect[o + 3], ragCollect[o + 4], ragCollect[o + 5], ragCollect[o + 6], ragCollect[o], ragCollect[o + 1], ragCollect[o + 2]]); }
+    ragGroups.push({ pelvis: [q[0][4], q[0][5], q[0][6]], q });
+  }
+}
+function nearestGroup(px, py, pz, claimed) {
+  let best = -1, bd = 25; // within 5m
+  for (let i = 0; i < ragGroups.length; i++) {
+    if (claimed.has(i)) continue;
+    const g = ragGroups[i].pelvis, d = (g[0] - px) ** 2 + (g[2] - pz) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+function bindRagdoll(V, group) {
+  V.scene.updateMatrixWorld(true);
+  const B0inv = [], V0 = [];
+  for (let r = 0; r < RAG_N; r++) {
+    const node = V.rag[r];
+    if (node) { B0inv[r] = new THREE.Quaternion(group.q[r][0], group.q[r][1], group.q[r][2], group.q[r][3]).invert(); V0[r] = node.getWorldQuaternion(new THREE.Quaternion()); }
+    else { B0inv[r] = null; V0[r] = null; }
+  }
+  V.bound = { B0inv, V0 };
+}
+function retargetRagdoll(V, group) {
+  const b = V.bound, hips = V.rag[0];
+  if (hips) { // place hips at the physics pelvis (converted into its parent's local space)
+    hips.parent.updateWorldMatrix(true, false);
+    hips.parent.matrixWorld.decompose(_rpp, _rp, _rps);
+    _rv.set(group.pelvis[0], group.pelvis[1], group.pelvis[2]).sub(_rpp).applyQuaternion(_rp.clone().invert()).divide(_rps);
+    hips.position.copy(_rv);
+  }
+  for (let r = 0; r < RAG_N; r++) {                       // parents precede children in RAG_BONES order
+    const node = V.rag[r]; if (!node || !b.V0[r]) continue;
+    _rq.set(group.q[r][0], group.q[r][1], group.q[r][2], group.q[r][3]).multiply(b.B0inv[r]).multiply(b.V0[r]); // world target
+    node.parent.updateWorldMatrix(true, false);
+    node.parent.getWorldQuaternion(_rt);
+    node.quaternion.copy(_rt.invert()).multiply(_rq);
+    node.updateWorldMatrix(false, true);
+  }
+}
 
 // ---------------- capture the flag: banners + score ----------------
 let flagsData = null, scoresData = null;
@@ -553,11 +614,13 @@ function updateDom() {
 let lastBricks = 0, lastRags = 0, lastWood = 0;
 function updateProps() {
   let nb = 0, nr = 0, nw = 0;
+  ragCollect.length = 0; // gather ragdoll bones this frame to drive the VRM ragdolls
   const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
     dummy.position.set(x, y, z);
     dummy.quaternion.set(qx, qy, qz, qw);
-    if (kind === 5) { // box3d capsule ragdoll — suppressed: the VRM avatars do their own
-      return;         // death collapse, so we skip the capsule corpses to avoid doubles
+    if (kind === 5) { // box3d ragdoll bone: collect (drives the VRM), don't draw the capsule
+      ragCollect.push(x, y, z, qx, qy, qz, qw);
+      return;
     } else if (kind === 7 || kind === 8) { // siege engine timber (trebuchet frame/arm, ram)
       if (nw >= woodMesh.count) return;
       dummy.scale.set(hx * 2, hy * 2, hz * 2);
@@ -589,6 +652,7 @@ function updateProps() {
   brickMesh.instanceMatrix.needsUpdate = true;
   ragdollMesh.instanceMatrix.needsUpdate = true;
   woodMesh.instanceMatrix.needsUpdate = true;
+  buildRagGroups(); // regroup this frame's ragdoll bones (14 per corpse) for VRM retargeting
 }
 
 const stonePool = [];
@@ -896,7 +960,9 @@ function updateInstances(dt) {
   for (const m of [hTorso, hHead, hLeg, hArm]) { if (colorDirty) m.instanceColor.needsUpdate = true; m.instanceMatrix.needsUpdate = true; }
   weaponMesh.instanceMatrix.needsUpdate = true;
 
-  // place & animate each VRM avatar at its soldier (walk when moving, hide when dead)
+  // place & animate each VRM avatar at its soldier: walk when alive, become a physics
+  // ragdoll (driven by its box3d bones) when dying, hidden when gone
+  const claimed = new Set();
   for (let t = 0; t < 2; t++) {
     for (const type in vrmPool[t]) {
       const pool = vrmPool[t][type], states = vrmState[t][type];
@@ -910,13 +976,26 @@ function updateInstances(dt) {
           const sp = Math.hypot(st.x - V.prevX, st.z - V.prevZ);
           V.prevX = st.x; V.prevZ = st.z;
           animateVRMClone(V, sp > 0.02, dt);
-        } else if (st && st.state === 1) {   // dying: collapse onto the ground (VRM ragdoll)
-          S.visible = true;
-          S.position.set(st.x, 0, st.z);
-          const p = Math.min(1, st.deathT / 0.7);       // fall over ~0.7s
-          S.rotation.set(-1.55 * p, st.face + Math.PI, 0);
-          animateVRMClone(V, false, dt);                // limbs go slack
-        } else S.visible = false;           // gone
+          V.bound = null; V.ragPelvis = null;
+        } else if (st && st.state === 1) {   // dying: drive the VRM from its box3d ragdoll
+          const gi = V.bound && V.ragPelvis
+            ? nearestGroup(V.ragPelvis[0], 0, V.ragPelvis[2], claimed)   // keep tracking the same corpse
+            : nearestGroup(st.x, 0, st.z, claimed);                      // bind by death location
+          if (gi >= 0) {
+            claimed.add(gi);
+            const grp = ragGroups[gi];
+            S.visible = true;
+            S.position.set(0, 0, 0); S.rotation.set(0, 0, 0); // bones carry world transforms
+            if (!V.bound) bindRagdoll(V, grp);
+            retargetRagdoll(V, grp);
+            V.ragPelvis = grp.pelvis;
+          } else { // ragdoll not found yet / already recycled — brief scripted slump
+            S.visible = true;
+            S.position.set(st.x, 0, st.z);
+            S.rotation.set(-1.55 * Math.min(1, st.deathT / 0.7), st.face + Math.PI, 0);
+            animateVRMClone(V, false, dt);
+          }
+        } else { S.visible = false; V.bound = null; V.ragPelvis = null; } // gone
         states[k] = null;
       }
     }
@@ -1181,8 +1260,8 @@ function frame(now) {
 
   updateCamera(dt);
   if (mode) {
+    updateProps();       // build ragGroups first so the VRM ragdolls read this frame's bones
     updateInstances(dt);
-    updateProps();
     updateFlags();
     updateDom();
     updateProjectiles(dt);

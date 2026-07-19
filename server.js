@@ -51,7 +51,7 @@ function initMsg(who) {
     tier: CONFIG.tier, render: CONFIG.render, // so the client matches the server's quality tier
     units: sim.units.map((u) => ({
       id: u.id, team: u.team, slot: u.slot, type: u.typeKey,
-      ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.type.n,
+      ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.n0,
     })),
   });
 }

@@ -50,6 +50,9 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
   const rng = mulberry32(seed);
   const units = [], soldiers = [], projectiles = [], arrows = [];
   const boulders = [];                 // live catapult rocks: { h, born, hits }
+  const rubbleAge = new Map();         // handle -> secs a brick has been loose rubble (kind 6); cleared when it settles
+  let rubbleT = 0;                     // debris-sweep timer
+  const RUBBLE_LIFE = 6;               // secs after a brick is knocked loose before it fades out (frees the body)
   const soldierByHandle = new Map();   // box3d body handle -> soldier (for contacts)
   const events = [];
   const stats = {
@@ -230,10 +233,18 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
       const keepZ = dir * 96;
       arena.buildFort(0, keepZ, 15, cw + 4, -dir);
       teamForts[DEF].push({ cx: 0, cz: keepZ, hs: 15, courses: cw + 4, gate: -dir });
-      // houses through the city (more masonry for the physics to chew on) — kept on the
-      // flanks + behind the keep so nothing spawns inside the defenders' muster zone
-      for (const hx of [-125, 125]) for (const hz of [45, 75, 105, 135]) house(hx, dir * hz, 4);
-      for (const hx of [-40, 40]) house(hx, dir * 132, 4);
+      // ---- a more defined CITY: two residential districts hugging the side walls, a
+      // district behind the keep, and a pair of round temples — all clear of the central
+      // gate->keep avenue and the defenders' muster zone (|x|<=100, z 44..90). The debris
+      // fade (settled rubble is removed) keeps the extra masonry affordable.
+      for (const side of [-1, 1]) {
+        // residential blocks: two rows of houses along each side wall, on cross-streets
+        for (const hx of [side * 120, side * 138]) for (const hz of [42, 66, 90, 114, 138]) house(hx, dir * hz, 4);
+        // a temple (round) tucked in each back quarter
+        arena.buildRondel(side * 78, dir * 132, 6, 12, cw);
+      }
+      // a market district directly behind the keep (keep back edge ~z111)
+      for (const hx of [-52, -18, 18, 52]) house(hx, dir * 130, 4);
       // garrisons: archers manning the wall segments beside each gate + tower tops + keep crest
       for (const gx of [-80, -25, 25, 80]) makeUnit(DEF, 0, 'archer', gx, wallZ, facing, 4, { y: cw + 0.15, garrison: true });
       for (const f of teamForts[DEF]) {
@@ -360,7 +371,8 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
         const arr = defs[g], cols = Math.min(arr.length, 8) || 1;
         arr.forEach((u, i) => {
           const col = i % cols, row = (i / cols) | 0;
-          u.ax = u.homeX = clamp((col + 0.5 - cols / 2) * (250 / cols), -125, 125);
+          // muster in the CENTRAL avenue (|x|<=100) so the flank residential districts stay clear
+          u.ax = u.homeX = clamp((col + 0.5 - cols / 2) * (200 / cols), -100, 100);
           u.az = u.homeZ = cityDir * (post[g] + row * 12);
           u.facing = faceOut;
         });
@@ -1034,6 +1046,21 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
       }
       for (let i = boulders.length - 1; i >= 0; i--) {
         if (sim.time - boulders[i].born > BOULDER_LIFE) { arena.remove(boulders[i].h); boulders.splice(i, 1); }
+      }
+    }
+    // Debris fade: masonry knocked loose by a breach/collision becomes rubble (kind 6);
+    // a few seconds later it fades out (removed from the world). This tidies the streets
+    // AND frees the brick budget so denser cities stay affordable. Swept every 0.5s; the
+    // lifetime is jittered by handle so a breach's rubble doesn't all pop at the same instant.
+    rubbleT -= dt;
+    if (rubbleT <= 0) {
+      rubbleT = 0.5;
+      const xf = arena.transforms, ST = arena.XF_STRIDE, n = arena.count;
+      for (let h = 0; h < n; h++) {
+        if (xf[h * ST + 7] !== 6) { if (rubbleAge.has(h)) rubbleAge.delete(h); continue; }
+        const age = (rubbleAge.get(h) || 0) + 0.5;
+        if (age >= RUBBLE_LIFE + (h % 8) * 0.4) { arena.remove(h); rubbleAge.delete(h); }
+        else rubbleAge.set(h, age);
       }
     }
     // arrows: cosmetic timers in JS, but the hit is resolved by a vertical ray at

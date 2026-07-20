@@ -841,39 +841,50 @@ const spectate = { on: false, i: -1, eye: new THREE.Vector3() };
 const EYE_H = 1.7; // camera eye height above the soldier's ground position (m)
 const _fpDir = new THREE.Vector3(), _fpLook = new THREE.Vector3(), _fpTmp = {};
 function soldierTeam(i) { const j = soldierUnitIdx[i]; const u = j != null && meta.units[j]; return u ? u.team : -1; }
-// Next live soldier in `dir` (+1/-1), preferring the viewer's own team. Returns index or -1.
-function pickSoldier(from, dir) {
-  const nS = meta.nS; if (!nS || !readSoldier) return -1;
+// first live soldier in unit j (or -1 if the whole troop is down)
+function liveInUnit(j) {
+  const u = meta.units[j]; if (!u) return -1;
+  for (let i = u.start; i < u.start + u.n; i++) if (readSoldier(i, _fpTmp) && _fpTmp.state === 0) return i;
+  return -1;
+}
+// N/M rotate among TROOPS (units), not individuals: step to the next unit in `dir` that
+// still has a live soldier (own team first), and ride one of its soldiers. Returns index or -1.
+function pickUnitSoldier(fromUnit, dir) {
+  const nU = meta.units.length; if (!nU || !readSoldier) return -1;
   const myTeam = you && !you.spectator ? you.team : -1;
   for (let pass = 0; pass < 2; pass++) {              // pass 0: own team only, pass 1: anyone
-    for (let k = 1; k <= nS; k++) {
-      const i = ((from + dir * k) % nS + nS) % nS;
-      if (pass === 0 && myTeam >= 0 && soldierTeam(i) !== myTeam) continue;
-      if (readSoldier(i, _fpTmp) && _fpTmp.state === 0) return i; // alive
+    for (let k = 1; k <= nU; k++) {
+      const j = ((fromUnit + dir * k) % nU + nU) % nU;
+      if (pass === 0 && myTeam >= 0 && meta.units[j].team !== myTeam) continue;
+      const i = liveInUnit(j);
+      if (i >= 0) return i;
     }
     if (myTeam < 0) break;                            // no team preference → one pass is enough
   }
   return -1;
 }
 function enterSpectate() {
-  const i = pickSoldier(spectate.i >= 0 ? spectate.i : -1, 1);
-  if (i < 0) return;                                  // nobody alive to ride
+  const i = pickUnitSoldier(-1, 1);
+  if (i < 0) return;                                  // no troop alive to ride
   spectate.on = true; spectate.i = i; updateFpvHud();
 }
 function exitSpectate() { spectate.on = false; updateFpvHud(); }
-function cycleSpectate(dir) { const i = pickSoldier(spectate.i, dir); if (i >= 0) { spectate.i = i; updateFpvHud(); } }
+function cycleSpectate(dir) { const cur = soldierUnitIdx[spectate.i] ?? -1; const i = pickUnitSoldier(cur, dir); if (i >= 0) { spectate.i = i; updateFpvHud(); } }
 const fpv = document.createElement('div');
 fpv.style.cssText = 'position:fixed;bottom:10px;left:50%;transform:translateX(-50%);color:#ffe066;font:13px system-ui;text-shadow:0 1px 2px #000;background:rgba(10,14,20,.72);border:1px solid #333;border-radius:6px;padding:5px 12px;display:none;pointer-events:none';
 document.body.appendChild(fpv);
 function updateFpvHud() {
   if (!spectate.on) { fpv.style.display = 'none'; return; }
-  const t = soldierTeam(spectate.i);
-  fpv.innerHTML = `👁 first-person — <b>${t === 0 ? 'Red' : t === 1 ? 'Blue' : '?'}</b> soldier · <b>N/M</b> next/prev · move mouse to look · <b>V/Esc</b> exit`;
+  const u = meta.units[soldierUnitIdx[spectate.i]];
+  const t = u ? u.team : -1;
+  fpv.innerHTML = `👁 first-person — <b>${t === 0 ? 'Red' : t === 1 ? 'Blue' : '?'} ${u ? u.type : ''}</b> · <b>N/M</b> next/prev troop · move mouse to look · <b>V/Esc</b> exit`;
   fpv.style.display = 'block';
 }
 function updateSpectateCamera() {
   if (!readSoldier(spectate.i, _fpTmp) || _fpTmp.state !== 0) { // current soldier died → auto-jump
-    const i = pickSoldier(spectate.i, 1);
+    const cur = soldierUnitIdx[spectate.i] ?? -1;
+    const i = cur >= 0 && liveInUnit(cur) >= 0 ? liveInUnit(cur) // stay with the troop while it lives
+      : pickUnitSoldier(cur, 1);                                 // troop wiped → hop to the next
     if (i < 0) { exitSpectate(); return false; }
     spectate.i = i; updateFpvHud(); readSoldier(spectate.i, _fpTmp);
   }

@@ -15,7 +15,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a2028);
 scene.fog = new THREE.Fog(0x1a2028, 180, 380);
-const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 1, 600);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.3, 600);
 // Prefer the discrete (NVIDIA) GPU, but fall back gracefully if the driver rejects
 // that context attribute or WebGL2 is blocked (hardware accel off).
 function makeRenderer() {
@@ -758,6 +758,61 @@ let zoom = 95, viewDir = 1;
 const keys = {};
 let mouseX = innerWidth / 2, mouseY = innerHeight / 2; // for aimed abilities (B: strike)
 addEventListener('pointermove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
+
+// ---- ride-along / first-person spectator (V toggles, N/M cycle characters) ----
+// Client-only: readSoldier(i) already exposes every soldier's live x/z/face/state,
+// so we just perch the camera at a chosen soldier's eye and look where they face.
+const spectate = { on: false, i: -1, eye: new THREE.Vector3() };
+const EYE_H = 1.7; // camera eye height above the soldier's ground position (m)
+const _fpDir = new THREE.Vector3(), _fpLook = new THREE.Vector3(), _fpTmp = {};
+function soldierTeam(i) { const j = soldierUnitIdx[i]; const u = j != null && meta.units[j]; return u ? u.team : -1; }
+// Next live soldier in `dir` (+1/-1), preferring the viewer's own team. Returns index or -1.
+function pickSoldier(from, dir) {
+  const nS = meta.nS; if (!nS || !readSoldier) return -1;
+  const myTeam = you && !you.spectator ? you.team : -1;
+  for (let pass = 0; pass < 2; pass++) {              // pass 0: own team only, pass 1: anyone
+    for (let k = 1; k <= nS; k++) {
+      const i = ((from + dir * k) % nS + nS) % nS;
+      if (pass === 0 && myTeam >= 0 && soldierTeam(i) !== myTeam) continue;
+      if (readSoldier(i, _fpTmp) && _fpTmp.state === 0) return i; // alive
+    }
+    if (myTeam < 0) break;                            // no team preference → one pass is enough
+  }
+  return -1;
+}
+function enterSpectate() {
+  const i = pickSoldier(spectate.i >= 0 ? spectate.i : -1, 1);
+  if (i < 0) return;                                  // nobody alive to ride
+  spectate.on = true; spectate.i = i; updateFpvHud();
+}
+function exitSpectate() { spectate.on = false; updateFpvHud(); }
+function cycleSpectate(dir) { const i = pickSoldier(spectate.i, dir); if (i >= 0) { spectate.i = i; updateFpvHud(); } }
+const fpv = document.createElement('div');
+fpv.style.cssText = 'position:fixed;bottom:10px;left:50%;transform:translateX(-50%);color:#ffe066;font:13px system-ui;text-shadow:0 1px 2px #000;background:rgba(10,14,20,.72);border:1px solid #333;border-radius:6px;padding:5px 12px;display:none;pointer-events:none';
+document.body.appendChild(fpv);
+function updateFpvHud() {
+  if (!spectate.on) { fpv.style.display = 'none'; return; }
+  const t = soldierTeam(spectate.i);
+  fpv.innerHTML = `👁 first-person — <b>${t === 0 ? 'Red' : t === 1 ? 'Blue' : '?'}</b> soldier · <b>N/M</b> next/prev · move mouse to look · <b>V/Esc</b> exit`;
+  fpv.style.display = 'block';
+}
+function updateSpectateCamera() {
+  if (!readSoldier(spectate.i, _fpTmp) || _fpTmp.state !== 0) { // current soldier died → auto-jump
+    const i = pickSoldier(spectate.i, 1);
+    if (i < 0) { exitSpectate(); return false; }
+    spectate.i = i; updateFpvHud(); readSoldier(spectate.i, _fpTmp);
+  }
+  // free-look: base yaw = the soldier's facing; mouse offsets yaw/pitch around it
+  const yaw = _fpTmp.face + (mouseX / innerWidth - 0.5) * 2.4;
+  const pitch = clamp(-(mouseY / innerHeight - 0.5) * 1.6, -1.2, 1.2);
+  const cp = Math.cos(pitch);
+  _fpDir.set(Math.sin(yaw) * cp, Math.sin(pitch), Math.cos(yaw) * cp);
+  // sit at the soldier's eye, nudged slightly forward so we look past our own head
+  spectate.eye.set(_fpTmp.x + _fpDir.x * 0.35, EYE_H, _fpTmp.z + _fpDir.z * 0.35);
+  camera.position.copy(spectate.eye);
+  camera.lookAt(_fpLook.copy(spectate.eye).addScaledVector(_fpDir, 12));
+  return true;
+}
 const PAN_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
@@ -770,10 +825,17 @@ addEventListener('keydown', (e) => {
     if (p) sendCmd({ type: 'strike', p: [p.x, p.z] });
   }
   if (e.code === 'KeyC') focusLeader(you && !you.spectator ? you.team : 0); // snap to your VRM troops
+  if (e.code === 'KeyV') spectate.on ? exitSpectate() : enterSpectate();    // ride-along first-person toggle
+  if (spectate.on) {
+    if (e.code === 'KeyN') cycleSpectate(1);                                // next character
+    if (e.code === 'KeyM') cycleSpectate(-1);                               // previous character
+    if (e.code === 'Escape') exitSpectate();
+  }
 });
 addEventListener('keyup', (e) => (keys[e.code] = false));
 addEventListener('wheel', (e) => { zoom = clamp(zoom + e.deltaY * 0.08, 25, 170); });
 function updateCamera(dt) {
+  if (spectate.on && updateSpectateCamera()) return;                 // ride-along overrides top-down
   const s = zoom * 0.6 * dt;
   if (keys.KeyW) camTarget.z -= s * viewDir;                       // WASD pans
   if (keys.KeyS) camTarget.z += s * viewDir;

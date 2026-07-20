@@ -5,7 +5,7 @@ INVASION ?= 0
 DOM ?= 0
 CTF ?= 0
 TIER ?= mid
-CHARS ?= glb
+CHARS ?= humanoid
 
 # TIER (low|mid|high|ultra|xt) scales army size, ragdolls, castle detail + render quality.
 # Force the NVIDIA GPU in the BROWSER you open (Linux/Optimus) e.g.:

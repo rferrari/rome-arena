@@ -12,10 +12,12 @@ import { CONFIG } from './physics/config.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
-// Which character art renders the army: 'glb' (KayKit gladiators, light, instanced-ish)
-// or 'vrm' (three-vrm avatars, heavier, physics-ragdoll deaths). The server picks it
-// (menu → --chars, sent in init); a ?chars= URL param or config default covers solo.
-let CHARS = new URLSearchParams(location.search).get('chars') || CONFIG.render.chars || 'glb';
+// Which character art renders the army:
+//   'humanoid' — the ORIGINAL instanced articulated figures + capsule ragdolls (fastest, default)
+//   'glb'      — KayKit gladiator clones (light skinned meshes, clip animations)
+//   'vrm'      — three-vrm avatars (heaviest, physics-ragdoll deaths)
+// The server picks it (menu → --chars, sent in init); ?chars= URL param covers solo.
+let CHARS = new URLSearchParams(location.search).get('chars') || CONFIG.render.chars || 'humanoid';
 
 // ---------------- scene ----------------
 const scene = new THREE.Scene();
@@ -314,18 +316,19 @@ function buildRenderers() {
   soldierUnitIdx.length = 0;
   meta.units.forEach((u, j) => { for (let i = 0; i < u.n; i++) soldierUnitIdx[u.start + i] = j; });
 
-  // assign EVERY soldier (all types) to a GLB avatar slot, up to VRM_CAP per team;
-  // count how many of each (team,type) so the clone pools can be sized
+  // assign EVERY soldier (all types) to an avatar slot, up to VRM_CAP per team; count
+  // how many of each (team,type) so the clone pools can be sized. In 'humanoid' mode
+  // no slots are assigned — every soldier renders as the original instanced figures.
   vrmSlot.clear();
   const vcount = [0, 0], need = [{}, {}];
-  for (const u of meta.units) {
+  if (CHARS !== 'humanoid') for (const u of meta.units) {
     for (let i = 0; i < u.n && vcount[u.team] < VRM_CAP; i++) {
       const k = need[u.team][u.type] || 0;
       vrmSlot.set(u.start + i, { team: u.team, type: u.type, k });
       need[u.team][u.type] = k + 1; vcount[u.team]++;
     }
   }
-  (CHARS === 'vrm' ? buildVRMArmy : buildGLBArmy)(need);
+  (CHARS === 'vrm' ? buildVRMArmy : buildGLBArmy)(need); // humanoid: empty `need` just tears down old clones
 
   const nS = meta.nS;
   const mk = (geo, count) => {
@@ -481,6 +484,11 @@ function setCharAnim(V, name) {
 // jump the camera to a team's character army (C key)
 function focusLeader(t) {
   for (const type in vrmPool[t]) { const V = vrmPool[t][type].find((x) => x.scene.visible); if (V) { camTarget.set(V.scene.position.x, 0, V.scene.position.z); zoom = 34; return; } }
+  // humanoid mode (no avatar clones): centre on the team's first live unit instead
+  for (let j = 0; j < meta.units.length; j++) {
+    const c = unitCentroids[j];
+    if (meta.units[j].team === t && c && c.n) { camTarget.set(c.x, 0, c.z); zoom = 34; return; }
+  }
 }
 window.__focusLeader = focusLeader;
 
@@ -691,7 +699,14 @@ function updateProps() {
   const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
     dummy.position.set(x, y, z);
     dummy.quaternion.set(qx, qy, qz, qw);
-    if (kind === 5) { // box3d ragdoll bone — capsule suppressed. Feed both corpse paths:
+    if (kind === 5) { // box3d ragdoll bone
+      if (CHARS === 'humanoid') { // original look: draw the jointed capsule corpse directly
+        if (nr >= ragdollMesh.count) return;
+        dummy.scale.set(hx, hy, hz);
+        dummy.updateMatrix(); ragdollMesh.setMatrixAt(nr++, dummy.matrix);
+        return;
+      }
+      // avatar modes: capsule suppressed — feed the corpse-driving paths instead
       if (nRag % RAG_N === 0) ragPelvis.push([x, y, z]); // GLB: every 14th (pelvis) rides the corpse
       ragCollect.push(x, y, z, qx, qy, qz, qw);          // VRM: full bone stream, regrouped below
       nRag++;

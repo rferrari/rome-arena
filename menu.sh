@@ -16,10 +16,11 @@ if [ -n "${pids:-}" ]; then printf '  freeing port %s (killing %s)\n' "$PORT" "$
 printf '\n  ═══ ROME ARENA ═══\n\n'
 
 printf '  Characters:\n'
-printf '    1) GLB gladiators   (light, scales far)   [default]\n'
-printf '    2) VRM avatars      (prettier, heavier — physics ragdolls)\n'
-read -rp '  Characters [1-2] (1): ' c; c="${c:-1}"
-[ "$c" = 2 ] && chars=vrm || chars=glb
+printf '    0) Humanoids        (original instanced figures + ragdolls, fastest)   [default]\n'
+printf '    1) GLB gladiators   (light animated models, scales far)\n'
+printf '    2) VRM avatars      (prettiest, heaviest — physics-ragdoll deaths)\n'
+read -rp '  Characters [0-2] (0): ' c; c="${c:-0}"
+case "$c" in 1) chars=glb;; 2) chars=vrm;; *) chars=humanoid;; esac
 
 printf '\n  Mode:\n'
 printf '    1) Battle        (open field)\n'

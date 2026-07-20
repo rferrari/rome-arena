@@ -22,7 +22,8 @@ export const CONFIG = {
   render: {
     brickCap: 6000,      // instanced brick cap (fort + rubble)
     soldier: 'humanoid', // 'humanoid' articulated figures, or 'capsule' for max perf
-    chars: 'glb',        // character art for the army: 'glb' (light) or 'vrm' (heavy). Menu/--chars overrides.
+    chars: 'humanoid',   // army art: 'humanoid' (original instanced figures + capsule ragdolls, fastest),
+                         // 'glb' (KayKit clones) or 'vrm' (three-vrm avatars). Menu/--chars overrides.
     vrmCap: 4000,        // above every tier's per-side count — the WHOLE army is rendered at every tier
     charScale: 0.9,      // GLB gladiator size (tune to match the ranks; 1.0 ≈ model's native height)
     charHeight: 1.05,    // VRM avatars auto-scaled to this height (m) — soldier-sized

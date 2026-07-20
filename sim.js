@@ -237,7 +237,9 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
       for (const tx of [-90, -30, 30, 90])
         engines.trebs.push({ id: arena.addTrebuchet(tx, adir * 100, ayaw), team: ATT, x: tx, z: adir * 100, cd: 3 + rng() * 5 });
       for (const lane of [-70, 0, 70]) { // one tower per lane, aimed straight at the wall there
-        const id = arena.addTower(lane, adir * 62, ayaw);
+        // spawn AHEAD of the infantry (they only collide with walls, so they plow through
+        // the ranks) — the rams must reach the wall FIRST, before the column stages
+        const id = arena.addTower(lane, adir * 34, ayaw);
         engines.towers.push({ id, h: arena.towerHandle(id), team: ATT, laneX: lane, dropped: false });
       }
     } else {
@@ -331,6 +333,27 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
         u.flankX = (u.ax >= 0 ? 1 : -1) * Math.max(Math.abs(u.ax), FIELD_W / 2 - 55);
         u.flankZ = inZ;
       } else if (u.type.ranged) u.role = 'support';    // archers shoot, they don't storm
+    }
+    // Invasion: GARRISON the city instead of one line hugging the wall. Defender units
+    // disperse into blocks across the interior — melee in a forward screen, archers a
+    // band behind them, cavalry as a central reserve — and hold those posts.
+    if (invasion) {
+      const defs = { melee: [], archer: [], cavalry: [] };
+      for (const u of units) {
+        if (u.team === ATT || u.garrison || u.typeKey === 'catapult') continue;
+        defs[u.typeKey === 'cavalry' ? 'cavalry' : u.type.ranged ? 'archer' : 'melee'].push(u);
+      }
+      const faceOut = cityDir === 1 ? Math.PI : 0;     // face the wall / the attacker
+      const post = { melee: 44, archer: 62, cavalry: 78 }; // depth inside the city (wall at 22)
+      for (const g in defs) {
+        const arr = defs[g], cols = Math.min(arr.length, 8) || 1;
+        arr.forEach((u, i) => {
+          const col = i % cols, row = (i / cols) | 0;
+          u.ax = u.homeX = clamp((col + 0.5 - cols / 2) * (250 / cols), -125, 125);
+          u.az = u.homeZ = cityDir * (post[g] + row * 12);
+          u.facing = faceOut;
+        });
+      }
     }
   }
 
@@ -892,20 +915,31 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
         // a wide breach (the "gate") the assault pours through. Collides only with walls,
         // so it barrels through the crowd; drives HARD and tears a big hole on impact.
         for (const tw of engines.towers) {
-          if (tw.dropped) continue;
           const o = tw.h * STE, rx = xfE[o], rz = xfE[o + 2];
+          if (tw.dropped) {
+            // keep PLOWING through the hole for a few seconds to bulldoze the rubble
+            // clear, with a second breach pulse that flings loose bricks into the city —
+            // the breach becomes an open gate, not a brick-pile the melee trips over
+            if (tw.clearT > 0) {
+              tw.clearT -= dt;
+              arena.towerDrive(tw.id, 0, cityDir * 5);
+              if (!tw.repunched && tw.clearT < 1.5) { tw.repunched = true; arena.breach(tw.laneX, 1, cityFrontZ + cityDir * 5, 12); }
+              if (tw.clearT <= 0) arena.towerDrive(tw.id, 0, 0);
+            }
+            continue;
+          }
           const tx = tw.laneX, tz = cityFrontZ, dx = tx - rx, dz = tz - rz, d = Math.hypot(dx, dz) || 1;
           const moved = Math.hypot(rx - (tw.px ?? rx), rz - (tw.pz ?? rz));
           tw.px = rx; tw.pz = rz;
           tw.stall = moved < 0.08 ? (tw.stall || 0) + dt : 0;
           if (Math.abs(rz - tz) < 4 || tw.stall > 0.4) { // hit the wall: drop bridge + ram a wide breach
-            arena.towerDrive(tw.id, 0, 0);
             arena.towerDrop(tw.id);
             arena.breach(tx, 1, tz, 16);                  // a wide gate torn in the wall
             breaches.push({ x: tx, z: tz, team: 1 - tw.team });
             assault[tw.team] = 'storm';
             events.push(['note', `${teamName(tw.team)} siege tower rams the wall open — storm!`]);
             tw.dropped = true;
+            tw.clearT = 3.5;                              // now bulldoze the lane clean
             continue;
           }
           arena.towerDrive(tw.id, (dx / d) * 8, (dz / d) * 8); // push HARD straight at the wall
@@ -1060,6 +1094,10 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
           let best = null, bd = 55 * 55;
           for (const e of units) {
             if (e.team === u.team || e.alive <= 0) continue;
+            // invasion defenders NEVER chase enemies still outside the wall — staged
+            // attackers 10m beyond a solid curtain are not a reason to hug the bricks
+            if (cityFrontZ !== null && teamStance && teamStance[u.team] === 'defend'
+              && cityDir * (e.cz - cityFrontZ) < 3) continue;
             const d = (e.cx - u.homeX) ** 2 + (e.cz - u.homeZ) ** 2;
             if (d < bd) { bd = d; best = e; }
           }

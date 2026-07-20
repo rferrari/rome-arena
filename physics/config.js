@@ -13,7 +13,10 @@ export const CONFIG = {
 
   // fort (siege): ONE walled city occupies the DEFENDER's side; the other team is the
   // ATTACKER and must breach in. `defender` picks which team holds the city (0 or 1).
-  fort: { halfSize: 8, courses: 5, backZ: 60, navCell: 2, defender: 1 },
+  // fort (mutual siege): both teams field a walled city and attack. invasion: ONE team
+  // (defender) holds a city occupying its whole side, the other rams in. defender picks
+  // which team holds the city in invasion mode.
+  fort: { halfSize: 8, courses: 5, backZ: 60, navCell: 2, stance: ['attack', 'attack'], defender: 1 },
 
   // client render knobs (sent to clients in `init` so they match the server tier)
   render: {

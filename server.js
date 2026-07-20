@@ -21,7 +21,8 @@ const argStr = (name, def) => {
 const PORT = arg('port', 8321);
 const TIER = setTier(argStr('tier', CONFIG.tier)); // low|mid|high|ultra scales the whole scene
 const PLAYERS = [Math.min(16, Math.max(1, arg('t0', CONFIG.players[0]))), Math.min(16, Math.max(1, arg('t1', CONFIG.players[1])))];
-const FORT = arg('fort', 0) > 0; // --fort 1 spawns per-team destructible castles
+const FORT = arg('fort', 0) > 0; // --fort 1 spawns per-team destructible castles (mutual siege)
+const INVASION = arg('invasion', 0) > 0; // --invasion 1 = one defended city, the other rams in
 const CTF = arg('ctf', 0) > 0;  // --ctf 1 = capture-the-flag mode (small squads + flags)
 const DOM = arg('dom', 0) > 0;  // --dom 1 = domination (3 capture zones, ticket bleed)
 const AI_TURN = arg('aiturn', 10); // seconds between LLM-general orders (mind Groq TPM limits)
@@ -41,7 +42,7 @@ let sim, state; // state: 'lobby' | 'playing'
 const arena = await createArena({ maxBodies: CONFIG.maxBodies }); // one box3d world, reused per battle
 
 function resetSim(seed = (Math.random() * 1e9) | 0) {
-  sim = createSim({ seed, players: PLAYERS, arena, fort: FORT, dom: DOM, ctf: CTF });
+  sim = createSim({ seed, players: PLAYERS, arena, fort: FORT, invasion: INVASION, dom: DOM, ctf: CTF });
   state = 'lobby';
   for (const who of clients.values()) if (!who.spectator) for (const s of who.slots) sim.ai.delete(`${who.team}:${s}`);
   // an LLM-commanded team is driven only by its general, not the built-in unit AI
@@ -95,7 +96,7 @@ function initMsg(who) {
     type: 'init', players: PLAYERS, you: who, state,
     ai: commanders.map((c) => (c ? c.model : null)), // LLM model per team (null = human/built-in AI)
     tier: CONFIG.tier, render: CONFIG.render,        // so the client matches the server's quality tier
-    ctf: CTF,
+    ctf: CTF, invasion: INVASION,
     units: sim.units.map((u) => ({
       id: u.id, team: u.team, slot: u.slot, type: u.typeKey,
       ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.n0,
@@ -270,4 +271,5 @@ if (commanders[0] || commanders[1]) {
   }, 1000 * AI_TURN);
 }
 
-console.log(`rome-arena server on http://localhost:${PORT}  (tier=${TIER}, ${PLAYERS[0]}v${PLAYERS[1]}${FORT ? ', forts' : ''}, lobby open — press FIGHT in a client to start)`);
+const modeLabel = INVASION ? ', invasion' : FORT ? ', forts' : '';
+console.log(`rome-arena server on http://localhost:${PORT}  (tier=${TIER}, ${PLAYERS[0]}v${PLAYERS[1]}${modeLabel}, lobby open — press FIGHT in a client to start)`);

@@ -1,9 +1,10 @@
 PORT ?= 8321
 SEED ?= 42
 FORT ?= 1
+INVASION ?= 0
 DOM ?= 0
 CTF ?= 0
-TIER ?= ultra
+TIER ?= mid
 
 # TIER (low|mid|high|ultra|xt) scales army size, ragdolls, castle detail + render quality.
 # Force the NVIDIA GPU in the BROWSER you open (Linux/Optimus) e.g.:
@@ -11,8 +12,8 @@ TIER ?= ultra
 start: ## interactive menu — pick mode + tier, then launch (Enter = Siege / Ultra)
 	@bash menu.sh $(PORT) $(SEED)
 
-run: ## non-interactive launch; set TIER=/FORT=/DOM=/CTF= (default ultra siege)
-	bun server.js --port $(PORT) --tier $(TIER) --seed $(SEED) --fort $(FORT) --dom $(DOM) --ctf $(CTF)
+run: ## non-interactive launch; set TIER=/FORT=/INVASION=/DOM=/CTF= (default mid siege)
+	bun server.js --port $(PORT) --tier $(TIER) --seed $(SEED) --fort $(FORT) --invasion $(INVASION) --dom $(DOM) --ctf $(CTF)
 
 stress: ## max-scale stress test: ultra tier + castles
 	bun server.js --port $(PORT) --tier ultra --seed $(SEED) --fort 1

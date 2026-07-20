@@ -184,6 +184,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
   let caps = null;                            // each team's capital (assault objective)
   let cityFrontZ = null, cityDir = 0;         // defender wall line + which way it faces (for staging)
   const assault = ['stage', 'stage'];         // per-team phase: 'stage' -> 'storm'
+  const breaches = [];                        // {x,z,team} — holes torn in `team`'s wall (guards plug them)
   let lastKill = 0;                           // sim.time of the last death (stalemate detection)
   if (fort || invasion) {
     const F = CONFIG.fort;
@@ -309,15 +310,27 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
     sim.teamForts = teamForts;
     recomputeNav();
 
-    // Battle plan: split assault columns from a home guard. In invasion only the ATTACKER
-    // musters (defenders hold the city); in mutual siege both teams do.
+    // Battle plan: COMBINED ARMS, not a mob. Each attacking unit gets a role by type:
+    //   assault  — heavy infantry column; paced approach, storms the breaches
+    //   support  — archers; trail the column and hold at bow range of the walls
+    //   flank    — cavalry; waits wide on the flanks, then sweeps in when the storm sounds
+    //   guard    — every Nth column stays home as a reserve line
+    // In invasion the DEFENDER's field units all become guards (hold the city, plug
+    // breaches) instead of being lured out by the nearest staged enemy.
     caps = [teamForts[0].find((f) => !f.tower), teamForts[1].find((f) => !f.tower)];
     const ATT = invasion ? 1 - (F.defender ?? 1) : -1;
     for (const u of units) {
       if (u.garrison || u.typeKey === 'catapult') continue;
-      if (invasion && u.team !== ATT) continue;
+      if (invasion && u.team !== ATT) { u.role = 'guard'; u.homeX = u.ax; u.homeZ = u.az; continue; }
       const stride = invasion ? 4 : 3;                 // every Nth column holds the line
-      if (u.slot % stride === stride - 1) { u.role = 'guard'; u.homeX = u.ax; u.homeZ = u.az; }
+      if (u.slot % stride === stride - 1) { u.role = 'guard'; u.homeX = u.ax; u.homeZ = u.az; continue; }
+      if (u.typeKey === 'cavalry') {
+        u.role = 'flank';                              // hold wide until the walls open
+        const cap = caps[1 - u.team];
+        const inZ = invasion ? cityFrontZ - cityDir * 26 : cap.cz - Math.sign(cap.cz || 1) * (cap.hs + 30);
+        u.flankX = (u.ax >= 0 ? 1 : -1) * Math.max(Math.abs(u.ax), FIELD_W / 2 - 55);
+        u.flankZ = inZ;
+      } else if (u.type.ranged) u.role = 'support';    // archers shoot, they don't storm
     }
   }
 
@@ -727,29 +740,37 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
         s.cd -= dt;
         if (s.cd <= 0) { s.cd = T.cd + rng() * ATTACK_CD_JIT; attack(s, enemy); }
       } else if (navUnit) {
-        // ASSAULT: advance along the wall-routing flow field toward the enemy capital.
-        // While the team is STAGING, hold a standoff ring outside the walls (facing
-        // them, archers loosing) and let the artillery breach — then storm through.
+        // ASSAULT (combined arms): heavy infantry advances as ONE paced column and stages
+        // at the wall; archers trail it and hold at bow range; cavalry waits wide on the
+        // flank and only sweeps in once a breach opens.
         if (T.ranged) fireArrowMaybe(s, dt);
-        if (assault[u.team] === 'stage') {
-          if (cityFrontZ !== null) {
-            // INVASION: hold in a band just OUTSIDE the enemy wall (facing it) and let
-            // the siege towers ram breaches — then storm through the gaps.
-            const gap = cityDir * (cityFrontZ - s.z); // >0 = still outside the wall
-            if (gap > -3 && gap < 16) { s.face = cityDir === 1 ? 0 : Math.PI; setStop(s); continue; }
-          } else {
-            // MUTUAL SIEGE: hold a standoff ring outside the enemy capital while the
-            // artillery breaches the walls — then storm through.
-            const cap = caps && caps[1 - u.team];
-            if (cap) {
-              const dc = Math.hypot(cap.cx - s.x, cap.cz - s.z);
-              if (dc < cap.hs + 26) { s.face = Math.atan2(cap.cx - s.x, cap.cz - s.z); setStop(s); continue; }
-            }
-          }
+        const staging = assault[u.team] === 'stage';
+        // how far outside the enemy wall this soldier still is (m)
+        const cap = caps && caps[1 - u.team];
+        const out = cityFrontZ !== null ? cityDir * (cityFrontZ - s.z)
+          : cap ? Math.hypot(cap.cx - s.x, cap.cz - s.z) - cap.hs : Infinity;
+        const faceWall = () => { s.face = cityFrontZ !== null ? (cityDir === 1 ? 0 : Math.PI) : Math.atan2(cap.cx - s.x, cap.cz - s.z); };
+        if (u.role === 'flank' && staging) {
+          // cavalry: hold WIDE, outside garrison bow range, until the storm sounds
+          const fd = Math.hypot(u.flankX - s.x, u.flankZ - s.z);
+          if (fd > 6) { s.face = Math.atan2(u.flankX - s.x, u.flankZ - s.z); setVel(s, u.flankX, u.flankZ, s.speed * speedMult, dt); }
+          else { faceWall(); setStop(s); }
+          continue;
         }
+        if (u.role === 'support') {
+          // archers: stand off at bow range of the walls and keep shooting; edge closer
+          // once storming, but never join the melee scrum in the breach
+          if (out < (staging ? 34 : 12)) { faceWall(); setStop(s); continue; }
+        } else if (staging && out > -3 && out < (cityFrontZ !== null ? 16 : 26)) {
+          // heavy infantry stages in a band under the wall until a breach opens
+          faceWall(); setStop(s); continue;
+        }
+        // paced approach: while staging, the column advances at pike speed so legion/spear
+        // don't string out ahead of it (full sprint resumes when the storm sounds)
+        const pace = staging && out > 20 ? Math.min(s.speed, 5.5) : s.speed;
         const dir = nav[u.team].sample(s.x, s.z);
-        if (dir) { s.face = Math.atan2(dir.x, dir.z); setVel(s, s.x + dir.x, s.z + dir.z, s.speed * speedMult, dt); }
-        else if (enemy) { s.face = Math.atan2(enemy.x - s.x, enemy.z - s.z); setVel(s, enemy.x, enemy.z, s.speed * speedMult, dt); }
+        if (dir) { s.face = Math.atan2(dir.x, dir.z); setVel(s, s.x + dir.x, s.z + dir.z, pace * speedMult, dt); }
+        else if (enemy) { s.face = Math.atan2(enemy.x - s.x, enemy.z - s.z); setVel(s, enemy.x, enemy.z, pace * speedMult, dt); }
         else moveToSlot(s, u, speedMult, dt); // arrived at the objective — brawl in formation
       } else if (enemy) {
         // defenders / open field: engage the nearby enemy directly
@@ -881,6 +902,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
             arena.towerDrive(tw.id, 0, 0);
             arena.towerDrop(tw.id);
             arena.breach(tx, 1, tz, 16);                  // a wide gate torn in the wall
+            breaches.push({ x: tx, z: tz, team: 1 - tw.team });
             assault[tw.team] = 'storm';
             events.push(['note', `${teamName(tw.team)} siege tower rams the wall open — storm!`]);
             tw.dropped = true;
@@ -900,6 +922,7 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
             arena.towerDrive(tw.id, 0, 0);
             arena.towerDrop(tw.id);
             arena.breach(rx + ((cap.cx - rx) / cd) * 5, 1, rz + ((cap.cz - rz) / cd) * 5, 11);
+            breaches.push({ x: rx + ((cap.cx - rx) / cd) * 5, z: rz + ((cap.cz - rz) / cd) * 5, team: 1 - tw.team });
             assault[tw.team] = 'storm'; // the tower's breach sounds the assault immediately
             events.push(['note', `${teamName(tw.team)} siege tower breaches the wall — storm!`]);
             tw.dropped = true;
@@ -1013,9 +1036,27 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
           }
           continue;
         }
-        // home guard: hold the line in front of our own city — engage only enemies
-        // that come near home, otherwise keep formation on the home anchor.
+        // home guard: hold the line — but the moment our wall is BREACHED, converge on
+        // the hole by type: melee plugs the gap, archers form up behind it, cavalry
+        // waits deeper as a counter-charge reserve. Otherwise engage only enemies that
+        // come near home, and never chase out past the walls.
         if (u.role === 'guard') {
+          let hole = null, hd = Infinity; // nearest breach in OUR wall
+          for (const b of breaches) {
+            if (b.team !== u.team) continue;
+            const d = (b.x - u.homeX) ** 2 + (b.z - u.homeZ) ** 2;
+            if (d < hd) { hd = d; hole = b; }
+          }
+          if (hole) {
+            // inward unit vector (from the hole toward our own capital/city interior)
+            const cap = caps && caps[u.team];
+            let ix = 0, iz = u.team === 0 ? 1 : -1;
+            if (cap) { const dx = cap.cx - hole.x, dz = cap.cz - hole.z, l = Math.hypot(dx, dz) || 1; ix = dx / l; iz = dz / l; }
+            const depth = u.typeKey === 'cavalry' ? 26 : u.type.ranged ? 15 : 4; // plug / support / reserve
+            u.ax = hole.x + ix * depth; u.az = hole.z + iz * depth;
+            u.facing = Math.atan2(-ix, -iz); // face out through the hole
+            continue;
+          }
           let best = null, bd = 55 * 55;
           for (const e of units) {
             if (e.team === u.team || e.alive <= 0) continue;

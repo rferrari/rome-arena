@@ -28,6 +28,7 @@ const DOM = arg('dom', 0) > 0;  // --dom 1 = domination (3 capture zones, ticket
 const AI_TURN = arg('aiturn', 10); // seconds between LLM-general orders (mind Groq TPM limits)
 const AUTOSTART = arg('autostart', 0) > 0; // begin the battle with no human FIGHT press
 const SEATS = Math.max(1, arg('seats', 2)); // slots a single client commands (default 2)
+const CHARS = argStr('chars', CONFIG.render.chars || 'glb'); // character art: vrm|glb
 
 // LLM generals per team: --ai0 groq --ai1 mock  (providers: groq|openai|pioneer|mock|none)
 const commanders = [null, null];
@@ -96,7 +97,7 @@ function initMsg(who) {
     type: 'init', players: PLAYERS, you: who, state,
     ai: commanders.map((c) => (c ? c.model : null)), // LLM model per team (null = human/built-in AI)
     tier: CONFIG.tier, render: CONFIG.render,        // so the client matches the server's quality tier
-    ctf: CTF, invasion: INVASION,
+    ctf: CTF, invasion: INVASION, chars: CHARS,
     units: sim.units.map((u) => ({
       id: u.id, team: u.team, slot: u.slot, type: u.typeKey,
       ax: u.ax, az: u.az, facing: u.facing, files: u.files, n: u.n0,
@@ -272,4 +273,4 @@ if (commanders[0] || commanders[1]) {
 }
 
 const modeLabel = INVASION ? ', invasion' : FORT ? ', forts' : '';
-console.log(`rome-arena server on http://localhost:${PORT}  (tier=${TIER}, ${PLAYERS[0]}v${PLAYERS[1]}${modeLabel}, lobby open — press FIGHT in a client to start)`);
+console.log(`rome-arena server on http://localhost:${PORT}  (tier=${TIER}, ${PLAYERS[0]}v${PLAYERS[1]}${modeLabel}, chars=${CHARS}, lobby open — press FIGHT in a client to start)`);

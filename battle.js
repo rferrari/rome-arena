@@ -5,11 +5,17 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { createSim, TYPES, FIELD_W, FIELD_D, SPACING } from './sim.js';
 import { createArena } from './physics/arena_api.js';
 import { CONFIG } from './physics/config.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// Which character art renders the army: 'glb' (KayKit gladiators, light, instanced-ish)
+// or 'vrm' (three-vrm avatars, heavier, physics-ragdoll deaths). The server picks it
+// (menu → --chars, sent in init); a ?chars= URL param or config default covers solo.
+let CHARS = new URLSearchParams(location.search).get('chars') || CONFIG.render.chars || 'glb';
 
 // ---------------- scene ----------------
 const scene = new THREE.Scene();
@@ -232,6 +238,7 @@ function connect() {
         clearTimeout(fallback);
         mode = 'net';
         you = m.you;
+        if (m.chars) CHARS = m.chars; // server-chosen character art (vrm|glb)
         if (m.render) renderer.setPixelRatio(Math.min(devicePixelRatio, m.render.pixelRatio || 2));
         buildMeta(m.units);
         setupNetReaders();
@@ -318,7 +325,7 @@ function buildRenderers() {
       need[u.team][u.type] = k + 1; vcount[u.team]++;
     }
   }
-  buildGLBArmy(need);
+  (CHARS === 'vrm' ? buildVRMArmy : buildGLBArmy)(need);
 
   const nS = meta.nS;
   const mk = (geo, count) => {
@@ -468,6 +475,140 @@ function focusLeader(t) {
 }
 window.__focusLeader = focusLeader;
 
+// ================= VRM army (alternate render path; CHARS==='vrm') =================
+// Same idea as the GLB army but with @pixiv/three-vrm avatars: each unit TYPE gets its
+// own VRM, Red/Blue use different sets, clones share geometry, and each is auto-scaled
+// to a fixed height. VRMs ship no clips → a procedural gait; on death the VRM is driven
+// directly by its box3d CreateHuman ragdoll bones. Heavier than GLB (skinned, no instancing).
+const _V = './assets/vrm/';
+const VRM_MODEL = [
+  { legion: 'crusader', spear: 'guard', pike: 'Paladin_J_Nordstrom', archer: 'ranger', cavalry: 'pirate', catapult: 'merchant' },  // Red
+  { legion: 'HornGuy', spear: 'goblin_d_shareyko', pike: 'Zombiegirl_W_Kurniawan', archer: 'Nightshade_J_Friedrich', cavalry: 'crusader', catapult: 'peasent' }, // Blue
+].map((o) => { const m = {}; for (const k in o) m[k] = _V + o[k] + '.vrm'; return m; });
+const VRM_HEIGHT = CONFIG.render.charHeight ?? 1.7;  // every VRM normalized to this height (metres)
+const VRM_BONES = [
+  ['leftUpperLeg', 'x', 1, 0], ['rightUpperLeg', 'x', -1, 0],
+  ['leftLowerLeg', 'x', -1, 0], ['rightLowerLeg', 'x', 1, 0],
+  ['leftUpperArm', 'z', 1, 1.15], ['rightUpperArm', 'z', -1, -1.15],
+];
+// box3d CreateHuman bone order -> VRM humanoid bone (for physics-driven ragdoll)
+const RAG_BONES = ['hips', 'spine', 'chest', 'upperChest', 'neck', 'head',
+  'leftUpperLeg', 'leftLowerLeg', 'rightUpperLeg', 'rightLowerLeg',
+  'leftUpperArm', 'leftLowerArm', 'rightUpperArm', 'rightLowerArm'];
+const RAG_N = RAG_BONES.length; // 14, matches box3d bone_count (shared by GLB pelvis path too)
+const _AX = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
+const _q = new THREE.Quaternion(), _box = new THREE.Box3(), _sz = new THREE.Vector3();
+let vrmScenes = [];                     // every VRM clone (teardown on rebuild)
+const vrmCache = new Map();             // path -> Promise<{scene, rawName, scale}>
+function loadVRM(path) {
+  if (!vrmCache.has(path)) {
+    const loader = new GLTFLoader();
+    loader.register((parser) => new VRMLoaderPlugin(parser));
+    vrmCache.set(path, loader.loadAsync(path).then((gltf) => {
+      const vrm = gltf.userData.vrm;
+      VRMUtils.rotateVRM0(vrm);
+      VRMUtils.removeUnnecessaryJoints(vrm.scene);
+      const rawName = {};
+      for (const bn of RAG_BONES) { const r = vrm.humanoid.getRawBoneNode(bn); if (r) rawName[bn] = r.name; }
+      _box.setFromObject(vrm.scene); _box.getSize(_sz);          // auto-scale to a fixed height
+      const scale = _sz.y > 0.01 ? VRM_HEIGHT / _sz.y : 1;
+      return { scene: vrm.scene, rawName, scale };
+    }));
+  }
+  return vrmCache.get(path);
+}
+function buildVRMArmy(need) {
+  for (const s of vrmScenes) if (s.parent) s.parent.remove(s);
+  vrmScenes = []; vrmPool = [{}, {}]; vrmState = [{}, {}];
+  for (let team = 0; team < 2; team++) {
+    for (const type in need[team]) {
+      const count = need[team][type], pool = [], states = new Array(count).fill(null);
+      vrmPool[team][type] = pool; vrmState[team][type] = states;
+      loadVRM(VRM_MODEL[team][type] || VRM_MODEL[team].legion).then(({ scene: src, rawName, scale }) => {
+        for (let k = 0; k < count; k++) {
+          const s = skeletonClone(src);
+          s.scale.setScalar(scale);
+          s.rotation.order = 'YXZ'; // yaw then tilt, so the death fall is relative to facing
+          s.visible = false;
+          s.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
+          scene.add(s); vrmScenes.push(s);
+          const bones = {};
+          for (const [bn, ax, dir, off] of VRM_BONES) {
+            const node = rawName[bn] && s.getObjectByName(rawName[bn]);
+            if (node) bones[bn] = { node, rest: node.quaternion.clone(), ax, dir, off };
+          }
+          const rag = RAG_BONES.map((bn) => (rawName[bn] ? s.getObjectByName(rawName[bn]) : null));
+          pool.push({ scene: s, bones, rag, phase: 0, prevX: 0, prevZ: 0, bound: null });
+        }
+      }).catch((e) => console.warn('VRM failed to load:', VRM_MODEL[team][type], e));
+    }
+  }
+}
+// procedural walk/idle applied as offsets from each raw bone's rest pose
+function animateVRMClone(V, moving, dt) {
+  V.phase += dt * (moving ? 9 : 2.2);
+  const sw = Math.sin(V.phase) * (moving ? 0.6 : 0.05);
+  for (const bn in V.bones) {
+    const b = V.bones[bn];
+    const isArm = bn.endsWith('Arm');
+    const ang = b.off + (isArm ? Math.abs(sw) * 0.2 * b.dir : sw * b.dir);
+    _q.setFromAxisAngle(_AX[b.ax], ang);
+    b.node.quaternion.copy(b.rest).multiply(_q);
+  }
+}
+// ---- physics ragdoll: drive a dying VRM from its box3d CreateHuman bones ----
+// The 14 world bone transforms arrive in the prop stream (kind 5), contiguous and in
+// bone order; group by 14, bind each to the nearest dead VRM, then retarget each bone
+// to its box3d bone's rotation DELTA from the bind pose (hips drive world position).
+let ragGroups = [];    // [{ pelvis:[x,y,z], q:[[x,y,z,w]*14] }] (built from ragCollect)
+const _rq = new THREE.Quaternion(), _rt = new THREE.Quaternion(), _rp = new THREE.Quaternion();
+const _rv = new THREE.Vector3(), _rpp = new THREE.Vector3(), _rps = new THREE.Vector3();
+function buildRagGroups() {
+  ragGroups.length = 0;
+  const n = (ragCollect.length / 7) | 0;
+  for (let g = 0; g + RAG_N <= n; g += RAG_N) {
+    const q = [];
+    for (let b = 0; b < RAG_N; b++) { const o = (g + b) * 7; q.push([ragCollect[o + 3], ragCollect[o + 4], ragCollect[o + 5], ragCollect[o + 6], ragCollect[o], ragCollect[o + 1], ragCollect[o + 2]]); }
+    ragGroups.push({ pelvis: [q[0][4], q[0][5], q[0][6]], q });
+  }
+}
+function nearestGroup(px, py, pz, claimed) {
+  let best = -1, bd = 25; // within 5m
+  for (let i = 0; i < ragGroups.length; i++) {
+    if (claimed.has(i)) continue;
+    const g = ragGroups[i].pelvis, d = (g[0] - px) ** 2 + (g[2] - pz) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+function bindRagdoll(V, group) {
+  V.scene.updateMatrixWorld(true);
+  const B0inv = [], V0 = [];
+  for (let r = 0; r < RAG_N; r++) {
+    const node = V.rag[r];
+    if (node) { B0inv[r] = new THREE.Quaternion(group.q[r][0], group.q[r][1], group.q[r][2], group.q[r][3]).invert(); V0[r] = node.getWorldQuaternion(new THREE.Quaternion()); }
+    else { B0inv[r] = null; V0[r] = null; }
+  }
+  V.bound = { B0inv, V0 };
+}
+function retargetRagdoll(V, group) {
+  const b = V.bound, hips = V.rag[0];
+  if (hips) { // place hips at the physics pelvis (converted into its parent's local space)
+    hips.parent.updateWorldMatrix(true, false);
+    hips.parent.matrixWorld.decompose(_rpp, _rp, _rps);
+    _rv.set(group.pelvis[0], group.pelvis[1], group.pelvis[2]).sub(_rpp).applyQuaternion(_rp.clone().invert()).divide(_rps);
+    hips.position.copy(_rv);
+  }
+  for (let r = 0; r < RAG_N; r++) {                       // parents precede children in RAG_BONES order
+    const node = V.rag[r]; if (!node || !b.V0[r]) continue;
+    _rq.set(group.q[r][0], group.q[r][1], group.q[r][2], group.q[r][3]).multiply(b.B0inv[r]).multiply(b.V0[r]); // world target
+    node.parent.updateWorldMatrix(true, false);
+    node.parent.getWorldQuaternion(_rt);
+    node.quaternion.copy(_rt.invert()).multiply(_rq);
+    node.updateWorldMatrix(false, true);
+  }
+}
+
 // ---------------- capture the flag: banners + score ----------------
 let flagsData = null, scoresData = null;
 const flagGroups = [0, 1].map((team) => {
@@ -528,8 +669,8 @@ function updateDom() {
 }
 
 let lastBricks = 0, lastRags = 0, lastWood = 0;
-const RAG_N = 14;            // box3d CreateHuman bones per ragdoll (pelvis is bone 0)
 let ragPelvis = [];         // [x,y,z] of each active ragdoll's pelvis (drives GLB corpse motion)
+let ragCollect = [];        // flat [x,y,z,qx,qy,qz,qw] per ragdoll bone (drives VRM ragdolls)
 function nearestPelvis(p) { // the active ragdoll pelvis closest to point p, or null
   let best = null, bd = 36; // within 6 m
   for (const g of ragPelvis) { const d = (g[0] - p[0]) ** 2 + (g[2] - p[2]) ** 2; if (d < bd) { bd = d; best = g; } }
@@ -537,12 +678,13 @@ function nearestPelvis(p) { // the active ragdoll pelvis closest to point p, or 
 }
 function updateProps() {
   let nb = 0, nr = 0, nw = 0, nRag = 0;
-  ragPelvis.length = 0;
+  ragPelvis.length = 0; ragCollect.length = 0;
   const put = (kind, x, y, z, qx, qy, qz, qw, hx, hy, hz) => {
     dummy.position.set(x, y, z);
     dummy.quaternion.set(qx, qy, qz, qw);
-    if (kind === 5) { // box3d ragdoll bone — capsule suppressed, but the pelvis (every
-      if (nRag % RAG_N === 0) ragPelvis.push([x, y, z]); // 14th bone) drives the GLB corpse so explosions fling it
+    if (kind === 5) { // box3d ragdoll bone — capsule suppressed. Feed both corpse paths:
+      if (nRag % RAG_N === 0) ragPelvis.push([x, y, z]); // GLB: every 14th (pelvis) rides the corpse
+      ragCollect.push(x, y, z, qx, qy, qz, qw);          // VRM: full bone stream, regrouped below
       nRag++;
       return;
     } else if (kind === 7 || kind === 8) { // siege engine timber (trebuchet frame/arm, ram)
@@ -576,6 +718,7 @@ function updateProps() {
   brickMesh.instanceMatrix.needsUpdate = true;
   ragdollMesh.instanceMatrix.needsUpdate = true;
   woodMesh.instanceMatrix.needsUpdate = true;
+  if (CHARS === 'vrm') buildRagGroups(); // regroup this frame's bones (14/corpse) for VRM retargeting
 }
 
 const stonePool = [];
@@ -890,7 +1033,7 @@ function updateInstances(dt) {
     const vs = vrmSlot.get(i);
     if (vs) { // rendered as a GLB gladiator instead of a capsule
       const st = vrmState[vs.team][vs.type];
-      if (st) st[vs.k] = { x: rs.x, z: rs.z, face: rs.face, state: rs.state };
+      if (st) st[vs.k] = { x: rs.x, z: rs.z, face: rs.face, state: rs.state, deathT: rs.deathT || 0 };
       if (rs.state === 0) { const c = unitCentroids[j]; c.x += rs.x; c.z += rs.z; c.n++; } // count for selection/orders
       hideHuman(i);
       const wl = weaponIdx[i]; if (wl >= 0) weaponMesh.setMatrixAt(wl, _zeroM);
@@ -955,31 +1098,73 @@ function updateInstances(dt) {
   for (const m of [hTorso, hHead, hLeg, hArm]) { if (colorDirty) m.instanceColor.needsUpdate = true; m.instanceMatrix.needsUpdate = true; }
   weaponMesh.instanceMatrix.needsUpdate = true;
 
-  // place & animate each GLB gladiator at its soldier (walk when moving, hide when dead)
-  for (let t = 0; t < 2; t++) {
-    for (const type in vrmPool[t]) {
-      const pool = vrmPool[t][type], states = vrmState[t][type];
-      for (let k = 0; k < pool.length; k++) {
-        const V = pool[k], st = states[k];
-        const S = V.scene;
-        if (st && st.state === 0) {         // alive: walk/idle at the soldier position
-          S.visible = true;
-          S.position.set(st.x, 0, st.z);
-          S.rotation.y = st.face;
-          const sp = Math.hypot(st.x - V.prevX, st.z - V.prevZ);
-          V.prevX = st.x; V.prevZ = st.z;
-          setCharAnim(V, sp > 0.02 ? 'walk' : 'idle');
-          V.pel = null;
-        } else if (st && st.state === 1) {  // dying: play Death_A, but ride the box3d ragdoll's
-          S.visible = true;                 // pelvis so explosions/boulders physically fling the corpse
-          const near = nearestPelvis(V.pel || [st.x, 0, st.z]);
-          if (near) { S.position.set(near[0], Math.max(0, near[1] - 0.9), near[2]); V.pel = near; }
-          else S.position.set(st.x, 0, st.z);
-          S.rotation.y = st.face;
-          setCharAnim(V, 'death');
-        } else { S.visible = false; V.pel = null; }
-        V.mixer.update(dt);
-        states[k] = null;
+  // place & animate each character avatar at its soldier. GLB: crossfade clips + ride
+  // the ragdoll pelvis on death. VRM: procedural gait + full physics-ragdoll retarget.
+  if (CHARS === 'vrm') {
+    const claimed = new Set();
+    for (let t = 0; t < 2; t++) {
+      for (const type in vrmPool[t]) {
+        const pool = vrmPool[t][type], states = vrmState[t][type];
+        for (let k = 0; k < pool.length; k++) {
+          const V = pool[k], st = states[k];
+          const S = V.scene;
+          if (st && st.state === 0) {          // alive: walk/idle
+            S.visible = true;
+            S.position.set(st.x, 0, st.z);
+            S.rotation.set(0, st.face + Math.PI, 0);
+            const sp = Math.hypot(st.x - V.prevX, st.z - V.prevZ);
+            V.prevX = st.x; V.prevZ = st.z;
+            animateVRMClone(V, sp > 0.02, dt);
+            V.bound = null; V.ragPelvis = null;
+          } else if (st && st.state === 1) {   // dying: drive the VRM from its box3d ragdoll
+            const gi = V.bound && V.ragPelvis
+              ? nearestGroup(V.ragPelvis[0], 0, V.ragPelvis[2], claimed)   // keep tracking the same corpse
+              : nearestGroup(st.x, 0, st.z, claimed);                      // bind by death location
+            if (gi >= 0) {
+              claimed.add(gi);
+              const grp = ragGroups[gi];
+              S.visible = true;
+              S.position.set(0, 0, 0); S.rotation.set(0, 0, 0); // bones carry world transforms
+              if (!V.bound) bindRagdoll(V, grp);
+              retargetRagdoll(V, grp);
+              V.ragPelvis = grp.pelvis;
+            } else { // ragdoll not found yet / recycled — brief scripted slump
+              S.visible = true;
+              S.position.set(st.x, 0, st.z);
+              S.rotation.set(-1.55 * Math.min(1, (st.deathT || 0) / 0.7), st.face + Math.PI, 0);
+              animateVRMClone(V, false, dt);
+            }
+          } else { S.visible = false; V.bound = null; V.ragPelvis = null; } // gone
+          states[k] = null;
+        }
+      }
+    }
+  } else {
+    for (let t = 0; t < 2; t++) {
+      for (const type in vrmPool[t]) {
+        const pool = vrmPool[t][type], states = vrmState[t][type];
+        for (let k = 0; k < pool.length; k++) {
+          const V = pool[k], st = states[k];
+          const S = V.scene;
+          if (st && st.state === 0) {         // alive: walk/idle at the soldier position
+            S.visible = true;
+            S.position.set(st.x, 0, st.z);
+            S.rotation.y = st.face;
+            const sp = Math.hypot(st.x - V.prevX, st.z - V.prevZ);
+            V.prevX = st.x; V.prevZ = st.z;
+            setCharAnim(V, sp > 0.02 ? 'walk' : 'idle');
+            V.pel = null;
+          } else if (st && st.state === 1) {  // dying: play Death_A, but ride the box3d ragdoll's
+            S.visible = true;                 // pelvis so explosions/boulders physically fling the corpse
+            const near = nearestPelvis(V.pel || [st.x, 0, st.z]);
+            if (near) { S.position.set(near[0], Math.max(0, near[1] - 0.9), near[2]); V.pel = near; }
+            else S.position.set(st.x, 0, st.z);
+            S.rotation.y = st.face;
+            setCharAnim(V, 'death');
+          } else { S.visible = false; V.pel = null; }
+          V.mixer.update(dt);
+          states[k] = null;
+        }
       }
     }
   }

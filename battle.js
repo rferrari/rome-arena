@@ -847,19 +847,15 @@ function liveInUnit(j) {
   for (let i = u.start; i < u.start + u.n; i++) if (readSoldier(i, _fpTmp) && _fpTmp.state === 0) return i;
   return -1;
 }
-// N/M rotate among TROOPS (units), not individuals: step to the next unit in `dir` that
-// still has a live soldier (own team first), and ride one of its soldiers. Returns index or -1.
+// N/M rotate among TROOPS (units), not individuals — dev tool, so it cycles through EVERY
+// unit on BOTH teams: step to the next unit in `dir` that still has a live soldier and ride
+// one of its soldiers. Returns index or -1.
 function pickUnitSoldier(fromUnit, dir) {
   const nU = meta.units.length; if (!nU || !readSoldier) return -1;
-  const myTeam = you && !you.spectator ? you.team : -1;
-  for (let pass = 0; pass < 2; pass++) {              // pass 0: own team only, pass 1: anyone
-    for (let k = 1; k <= nU; k++) {
-      const j = ((fromUnit + dir * k) % nU + nU) % nU;
-      if (pass === 0 && myTeam >= 0 && meta.units[j].team !== myTeam) continue;
-      const i = liveInUnit(j);
-      if (i >= 0) return i;
-    }
-    if (myTeam < 0) break;                            // no team preference → one pass is enough
+  for (let k = 1; k <= nU; k++) {
+    const j = ((fromUnit + dir * k) % nU + nU) % nU;
+    const i = liveInUnit(j);
+    if (i >= 0) return i;
   }
   return -1;
 }

@@ -206,16 +206,26 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
       teamStance = []; teamStance[DEF] = 'defend'; teamStance[ATT] = 'attack';
       const dir = DEF === 0 ? 1 : -1, facing = DEF === 0 ? Math.PI : 0; // dir points into the DEF side
       const cw = F.courses, halfW = 150, wallZ = dir * 22, backZ = dir * 148; // curtain front / city back
-      cityFrontZ = wallZ; cityDir = dir;         // attackers stage outside this line until a breach
-      // SOLID front curtain (no gate) + side + back walls — the siege towers ram it open
-      arena.buildWall(-halfW, wallZ, halfW, wallZ, cw);
+      cityFrontZ = wallZ; cityDir = dir;
+      // FRONT curtain with three GATES (open gaps) at the lanes; the attacker pours through
+      // them (defenders garrison the gates), while siege towers punch extra breaches in the
+      // solid stretches between. Side + back walls stay solid.
+      const GATES = [-70, 0, 70], GW = 9; // gate centres + half-width
+      const edges = [-halfW];
+      for (const g of GATES) edges.push(g - GW, g + GW);
+      edges.push(halfW);
+      for (let i = 0; i < edges.length; i += 2) arena.buildWall(edges[i], wallZ, edges[i + 1], wallZ, cw);
       arena.buildWall(-halfW, wallZ, -halfW, backZ, cw); arena.buildWall(halfW, wallZ, halfW, backZ, cw);
       arena.buildWall(-halfW, backZ, halfW, backZ, cw);
-      // corner towers + two small watchtowers flanking the centre (garrison models on top)
-      for (const [tx, tz] of [[-halfW, wallZ], [halfW, wallZ], [-halfW, backZ], [halfW, backZ], [-46, wallZ], [46, wallZ]]) {
+      // watchtowers on the FOUR CORNERS only (garrison models on top)
+      for (const [tx, tz] of [[-halfW, wallZ], [halfW, wallZ], [-halfW, backZ], [halfW, backZ]]) {
         arena.buildRondel(tx, tz, 4.5, 10, cw + 2);
         teamForts[DEF].push({ cx: tx, cz: tz, hs: 4.5, courses: cw + 2, tower: true });
       }
+      // the gates are open entries from the start: register them so defenders garrison them
+      // and the attacker storms straight through (no wall-hugging wait for a breach)
+      for (const g of GATES) breaches.push({ x: g, z: wallZ, team: DEF });
+      assault[ATT] = 'storm';
       // central CASTLE/KEEP — the big destructible structure, gate facing the attacker
       const keepZ = dir * 96;
       arena.buildFort(0, keepZ, 15, cw + 4, -dir);
@@ -224,19 +234,20 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
       // flanks + behind the keep so nothing spawns inside the defenders' muster zone
       for (const hx of [-125, 125]) for (const hz of [45, 75, 105, 135]) house(hx, dir * hz, 4);
       for (const hx of [-40, 40]) house(hx, dir * 132, 4);
-      // garrisons: a line manning the front curtain + the tower tops + the keep crest
-      for (const gx of [-95, -60, 60, 95]) makeUnit(DEF, 0, 'archer', gx, wallZ, facing, 4, { y: cw + 0.15, garrison: true });
+      // garrisons: archers manning the wall segments beside each gate + tower tops + keep crest
+      for (const gx of [-80, -25, 25, 80]) makeUnit(DEF, 0, 'archer', gx, wallZ, facing, 4, { y: cw + 0.15, garrison: true });
       for (const f of teamForts[DEF]) {
         const nArch = f.hs >= 10 ? 6 : 3;
         const gz = f.tower ? f.cz : f.cz + dir * f.hs; // towers: stand on top; keep: rear crest
         makeUnit(DEF, 0, 'archer', f.cx, gz, facing, nArch, { y: f.courses + 0.15, garrison: true });
       }
-      // jointed siege engines — only the ATTACKER besieges: a trebuchet line + THREE siege
-      // towers that ram the solid wall on separate lanes to punch the breaches
+      // jointed siege engines — only the ATTACKER besieges: a trebuchet line + siege towers
+      // that ram the SOLID stretches BETWEEN the gates to tear extra breaches (so the
+      // defense can't just funnel everyone onto the three gates)
       const adir = ATT === 0 ? 1 : -1, ayaw = ATT === 0 ? Math.PI : 0;
       for (const tx of [-90, -30, 30, 90])
         engines.trebs.push({ id: arena.addTrebuchet(tx, adir * 100, ayaw), team: ATT, x: tx, z: adir * 100, cd: 3 + rng() * 5 });
-      for (const lane of [-70, 0, 70]) { // one tower per lane, aimed straight at the wall there
+      for (const lane of [-35, 35]) { // ram the solid segments flanking the central gate
         // spawn AHEAD of the infantry (they only collide with walls, so they plow through
         // the ranks) — the rams must reach the wall FIRST, before the column stages
         const id = arena.addTower(lane, adir * 34, ayaw);

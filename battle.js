@@ -416,11 +416,14 @@ for (const m of [brickMesh, ragdollMesh, woodMesh]) {
 // model, and Red = living gladiators vs Blue = skeletons for instant team ID. Clones
 // (SkeletonUtils) share each model's geometry/textures; per-clone AnimationMixer plays
 // the embedded Idle / Walking_A / Death_A clips. KayKit GLBs (EXT_meshopt_compression).
-const _G = './assets/mobs/gladiators/';
+// gladiators are humanoid KayKit rigs; beasts (bull/wolf/…) live in a sibling folder and
+// use different clip names — resolved per-model below.
+const BEASTS = new Set(['bull', 'wolf', 'goblin', 'orc', 'stag', 'fox', 'demon', 'giant', 'spider', 'yeti', 'alpaca', 'velociraptor']);
+const glbPath = (n) => `./assets/mobs/${BEASTS.has(n) ? 'beasts' : 'gladiators'}/${n}.glb`;
 const CHAR_MODEL = [
-  { legion: 'knight', spear: 'barbarian', pike: 'knight', archer: 'rogue', cavalry: 'barbarian', catapult: 'mage' },       // Red — living
-  { legion: 'skeleton_warrior', spear: 'skeleton_warrior', pike: 'skeleton_warrior', archer: 'skeleton_rogue', cavalry: 'skeleton_minion', catapult: 'skeleton_mage' }, // Blue — undead
-].map((o) => { const m = {}; for (const k in o) m[k] = _G + o[k] + '.glb'; return m; });
+  { legion: 'knight', spear: 'barbarian', pike: 'knight', archer: 'rogue', cavalry: 'bull', catapult: 'mage' },       // Red — living + a war bull
+  { legion: 'skeleton_warrior', spear: 'goblin', pike: 'orc', archer: 'skeleton_rogue', cavalry: 'wolf', catapult: 'skeleton_mage' }, // Blue — undead + goblinoids + wolves
+].map((o) => { const m = {}; for (const k in o) m[k] = glbPath(o[k]); return m; });
 const CHAR_SCALE = CONFIG.render.charScale ?? 1.0;   // troop-sized; tune to match the ranks
 let VRM_CAP = CONFIG.render.vrmCap ?? 8;             // GLB avatars per team (whole army, capped)
 let vrmPool = [{}, {}];                 // team -> { type: [ {scene,mixer,actions,current,prevX,prevZ} ] }
@@ -453,8 +456,14 @@ function buildGLBArmy(need) {
           s.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
           scene.add(s); glbScenes.push(s);
           const mixer = new THREE.AnimationMixer(s);
-          const act = (n) => { const c = THREE.AnimationClip.findByName(gltf.animations, n); return c ? mixer.clipAction(c) : null; };
-          const actions = { idle: act('Idle'), walk: act('Walking_A'), death: act('Death_A') };
+          // clip names differ (gladiators: Walking_A/Death_A ; beasts: Gallop/Walk/Death) —
+          // take the first candidate the model actually ships.
+          const act = (names) => { for (const n of names) { const c = THREE.AnimationClip.findByName(gltf.animations, n); if (c) return mixer.clipAction(c); } return null; };
+          const actions = {
+            idle: act(['Idle']),
+            walk: act(['Gallop', 'Walking_A', 'Walk', 'Running_A', 'Run']),
+            death: act(['Death_A', 'Death']),
+          };
           if (actions.death) { actions.death.setLoop(THREE.LoopOnce, 1); actions.death.clampWhenFinished = true; } // die once, hold the pose
           if (actions.idle) actions.idle.play();
           pool.push({ scene: s, mixer, actions, current: 'idle', prevX: 0, prevZ: 0 });
@@ -483,7 +492,7 @@ window.__focusLeader = focusLeader;
 const _V = './assets/vrm/';
 const VRM_MODEL = [
   { legion: 'crusader', spear: 'guard', pike: 'Paladin_J_Nordstrom', archer: 'ranger', cavalry: 'pirate', catapult: 'merchant' },  // Red
-  { legion: 'HornGuy', spear: 'goblin_d_shareyko', pike: 'Zombiegirl_W_Kurniawan', archer: 'Nightshade_J_Friedrich', cavalry: 'crusader', catapult: 'peasent' }, // Blue
+  { legion: 'HornGuy', spear: 'goblin_d_shareyko', pike: 'Zombiegirl_W_Kurniawan', archer: 'Nightshade_J_Friedrich', cavalry: 'HornGuy', catapult: 'peasent' }, // Blue
 ].map((o) => { const m = {}; for (const k in o) m[k] = _V + o[k] + '.vrm'; return m; });
 const VRM_HEIGHT = CONFIG.render.charHeight ?? 1.7;  // every VRM normalized to this height (metres)
 const VRM_BONES = [

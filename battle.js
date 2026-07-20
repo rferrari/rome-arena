@@ -860,7 +860,9 @@ function pickUnitSoldier(fromUnit, dir) {
   return -1;
 }
 function enterSpectate() {
-  const i = pickUnitSoldier(-1, 1);
+  let i = -1;
+  for (const j of selected) { const s = liveInUnit(j); if (s >= 0) { i = s; break; } } // ride the selected troop first
+  if (i < 0) i = pickUnitSoldier(-1, 1);              // nothing selected/alive → first troop on the field
   if (i < 0) return;                                  // no troop alive to ride
   spectate.on = true; spectate.i = i; updateFpvHud();
 }

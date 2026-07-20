@@ -355,6 +355,13 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
         });
       }
     }
+    // siege context for the LLM generals (read live at each AI turn)
+    sim.fortCenter = [caps[0] ? [Math.round(caps[0].cx), Math.round(caps[0].cz)] : null,
+                      caps[1] ? [Math.round(caps[1].cx), Math.round(caps[1].cz)] : null];
+    sim.breaches = breaches;
+    sim.siege = invasion
+      ? { mode: 'invasion', defender: F.defender ?? 1, attacker: ATT, wallZ: Math.round(cityFrontZ), cityDir }
+      : { mode: 'siege' };
   }
 
   // Domination: three capture zones across the midfield. Holding a zone (more live
@@ -639,9 +646,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
   function setStop(s) { const it = arena.intents, o = s.h * 2; it[o] = 0; it[o + 1] = 0; }
 
   // ---- orders (caller validates ownership) ----
+  const COMMAND_HOLD = 15; // s a unit obeys an explicit order before falling back to built-in AI
   function order(unitIds, p0, p1) {
     const sel = unitIds.map((i) => units[i]).filter((u) => u && u.alive > 0 && !u.broken);
     if (!sel.length) return;
+    for (const u of sel) u.commandT = sim.time + COMMAND_HOLD; // mark as freshly commanded
     const ec = enemyCentroid(sel[0].team);
     let dx = p1.x - p0.x, dz = p1.z - p0.z;
     const len = Math.hypot(dx, dz);
@@ -751,7 +760,11 @@ export function createSim({ seed = 1, players = [2, 2], arena, fort = false, inv
       // Only AI-driven slots auto-assault along the siege flow field. A slot commanded
       // by a human or an LLM general (removed from sim.ai) OBEYS its orders — it forms
       // up at the ordered point and fights locally instead of being dragged to the wall.
-      const commanded = !sim.ai.has(`${u.team}:${u.slot}`);
+      // A unit is "commanded" (obeys its order, no built-in assault) when a HUMAN holds
+      // its slot, OR it has a FRESH explicit order. LLM-team slots stay in sim.ai, so a
+      // unit the general hasn't ordered this turn falls back to built-in AI (assault in
+      // siege/invasion) instead of standing idle — the old code froze the whole army.
+      const commanded = !sim.ai.has(`${u.team}:${u.slot}`) || (u.commandT || 0) > sim.time;
       const navUnit = nav && teamStance[u.team] === 'attack' && T !== TYPES.catapult && u.role !== 'guard' && !commanded;
       const enemy = nearestEnemy(s, SEEK_RANGE);
       const eDist = enemy ? Math.hypot(enemy.x - s.x, enemy.z - s.z) : Infinity;

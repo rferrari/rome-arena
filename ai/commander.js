@@ -14,9 +14,28 @@ function serializeState(sim, team) {
     `${u.broken ? ' BROKEN' : ''}${u.stance ? ' inStance' : ''} at (${r1(u.cx)},${r1(u.cz)})`;
   const mine = sim.units.filter((u) => u.team === team && u.alive > 0);
   const foe = sim.units.filter((u) => u.team !== team && u.alive > 0);
-  const forts = sim.fortCenter ? `\nForts: yours ~(${sim.fortCenter[team]}), enemy ~(${sim.fortCenter[1 - team]})` : '';
+  let situation = '';
+  const s = sim.siege;
+  if (s && s.mode === 'invasion') {
+    const attacking = s.attacker === team;
+    const gate = `x=0`, wall = `z=${s.wallZ}`;
+    const holes = (sim.breaches || []).map((b) => `(${Math.round(b.x)},${Math.round(b.z)})`);
+    situation = `\n\nSIEGE — INVASION. You are the ${attacking ? 'ATTACKER' : 'DEFENDER'}. ` +
+      `The defended city fills the z${s.cityDir > 0 ? '>' : '<'}${s.wallZ} side behind a solid wall at ${wall}; the keep is deep inside near (${sim.fortCenter[s.defender]}).` +
+      (attacking
+        ? ` Your siege towers RAM the wall to tear breaches, then your troops STORM through them. ` +
+          `Do NOT pile everyone on the intact wall — mass your infantry at a breach, keep archers back shooting the ramparts, hold cavalry wide to exploit the gap. ` +
+          (holes.length ? `Breaches are OPEN at: ${holes.join(', ')} — send melee THROUGH them.` : `No breach yet — stage just outside the wall and wait for the rams (a few seconds).`)
+        : ` HOLD the city. Do NOT march out past the wall. Spread your units in depth across the interior; when a breach opens, converge melee on the hole, archers just behind, cavalry as a counter-charge reserve. ` +
+          (holes.length ? `Wall is BREACHED at: ${holes.join(', ')} — plug them NOW.` : `Wall still intact — form up in blocks and wait.`));
+  } else if (s && s.mode === 'siege') {
+    situation = `\n\nSIEGE. Both sides hold a walled city; both attack. Enemy keep near (${sim.fortCenter[1 - team]}), yours near (${sim.fortCenter[team]}). ` +
+      `Trebuchets/siege towers breach walls — mass infantry at the breach, archers support, cavalry flanks. Leave a guard on your own city.`;
+  } else if (sim.fortCenter && sim.fortCenter[team]) {
+    situation = `\nForts: yours ~(${sim.fortCenter[team]}), enemy ~(${sim.fortCenter[1 - team]})`;
+  }
   return `Battlefield ${2 * FIELD_X}x${2 * FIELD_Z}, x in [-${FIELD_X},${FIELD_X}], z in [-${FIELD_Z},${FIELD_Z}].` +
-    forts +
+    situation +
     `\n\nYOUR UNITS (${teamName(team)}):\n${mine.map(desc).join('\n')}` +
     `\n\nENEMY UNITS:\n${foe.map(desc).join('\n')}`;
 }

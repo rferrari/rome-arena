@@ -46,8 +46,10 @@ function resetSim(seed = (Math.random() * 1e9) | 0) {
   sim = createSim({ seed, players: PLAYERS, arena, fort: FORT, invasion: INVASION, dom: DOM, ctf: CTF });
   state = 'lobby';
   for (const who of clients.values()) if (!who.spectator) for (const s of who.slots) sim.ai.delete(`${who.team}:${s}`);
-  // an LLM-commanded team is driven only by its general, not the built-in unit AI
-  for (let t = 0; t < 2; t++) if (commanders[t]) for (let s = 0; s < PLAYERS[t]; s++) sim.ai.delete(`${t}:${s}`);
+  // NOTE: LLM-commanded teams KEEP their slots in sim.ai. The general's explicit orders
+  // override per-unit for COMMAND_HOLD seconds (see sim.order); any unit it doesn't order
+  // falls back to the built-in assault AI instead of standing idle. (Previously we deleted
+  // every LLM slot here, which froze the ~75% of units the general never named each turn.)
 }
 resetSim(arg('seed', 42) | 0);
 

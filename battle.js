@@ -869,12 +869,18 @@ function cycleSpectate(dir) { const cur = soldierUnitIdx[spectate.i] ?? -1; cons
 const fpv = document.createElement('div');
 fpv.style.cssText = 'position:fixed;bottom:10px;left:50%;transform:translateX(-50%);color:#ffe066;font:13px system-ui;text-shadow:0 1px 2px #000;background:rgba(10,14,20,.72);border:1px solid #333;border-radius:6px;padding:5px 12px;display:none;pointer-events:none';
 document.body.appendChild(fpv);
+// aiming crosshair (screen centre) — right-click sends the ridden troop where it points
+const crosshair = document.createElement('div');
+crosshair.textContent = '+';
+crosshair.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#ffe066;font:22px monospace;text-shadow:0 1px 3px #000;display:none;pointer-events:none;opacity:.85';
+document.body.appendChild(crosshair);
 function updateFpvHud() {
-  if (!spectate.on) { fpv.style.display = 'none'; return; }
+  if (!spectate.on) { fpv.style.display = 'none'; crosshair.style.display = 'none'; return; }
   const u = meta.units[soldierUnitIdx[spectate.i]];
   const t = u ? u.team : -1;
-  fpv.innerHTML = `👁 first-person — <b>${t === 0 ? 'Red' : t === 1 ? 'Blue' : '?'} ${u ? u.type : ''}</b> · <b>N/M</b> next/prev troop · move mouse to look · <b>V/Esc</b> exit`;
+  fpv.innerHTML = `👁 first-person — <b>${t === 0 ? 'Red' : t === 1 ? 'Blue' : '?'} ${u ? u.type : ''}</b> · <b>N/M</b> troop · <b>right-click</b> = move here · look with mouse · <b>V/Esc</b> exit`;
   fpv.style.display = 'block';
+  crosshair.style.display = 'block';
 }
 function updateSpectateCamera() {
   if (!readSoldier(spectate.i, _fpTmp) || _fpTmp.state !== 0) { // current soldier died → auto-jump
@@ -956,6 +962,26 @@ function screenPos(x, z) {
   const v = new THREE.Vector3(x, 0, z).project(camera);
   return { x: (v.x + 1) / 2 * innerWidth, y: (-v.y + 1) / 2 * innerHeight };
 }
+// first-person: the ground point the crosshair (screen centre) is aimed at, or null if
+// you're looking at/above the horizon (ray never meets the floor ahead).
+function lookGroundPoint() {
+  ndc.set(0, 0);
+  raycaster.setFromCamera(ndc, camera);
+  const o = raycaster.ray.origin, d = raycaster.ray.direction;
+  if (d.y >= -1e-4) return null;
+  const t = -o.y / d.y;
+  return { x: o.x + d.x * t, z: o.z + d.z * t };
+}
+// right-click while riding a troop: order that whole unit to march to the aimed spot.
+// (Ownership is enforced by the server in net mode; solo commands any unit.)
+function fpOrder() {
+  const j = soldierUnitIdx[spectate.i];
+  if (j == null) return;
+  const p = lookGroundPoint();
+  if (!p) return;
+  sendCmd({ type: 'order', unitIds: [j], p0: [p.x, p.z], p1: [p.x, p.z] });
+  spawnParticles(p.x, 0.3, p.z, 12, 0xffe066, 3, 0.6);
+}
 
 const previewGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
 const previewLine = new THREE.Line(previewGeo, new THREE.LineBasicMaterial({ color: 0xffe066 }));
@@ -966,6 +992,7 @@ scene.add(previewLine);
 let selStart = null, ordStart = null;
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (spectate.on) { if (e.button === 2) fpOrder(); return; } // first-person: right-click = move ridden troop
   if (e.button === 0) selStart = { x: e.clientX, y: e.clientY };
   if (e.button === 2) ordStart = groundPoint(e.clientX, e.clientY);
 });

@@ -29,7 +29,7 @@ uint32_t g_randomSeed = 12345u;
 
 // body kinds (also written into the transform buffer's flags slot)
 enum { KIND_DEAD = 0, KIND_SOLDIER = 1, KIND_BRICK = 2, KIND_BOULDER = 3, KIND_STATIC = 4, KIND_RAGDOLL = 5, KIND_RUBBLE = 6,
-       KIND_ENGINE = 7 /* trebuchet frame/arm */, KIND_RAM = 8 };
+       KIND_ENGINE = 7 /* trebuchet frame/arm */, KIND_RAM = 8, KIND_CAPSULE = 9 /* round tower/column */ };
 
 // collision categories. Ragdolls (dead soldiers) collide only with the world/rubble
 // so corpses fall realistically without blocking the living battle.
@@ -282,6 +282,105 @@ int arena_add_brick(float x, float y, float z, float hx, float hy, float hz, int
   sd.filter.maskBits = MASK_ALL;
   b3CreateHullShape(id, &sd, &hull.base);
   return push_body_ext(id, isDynamic ? KIND_BRICK : KIND_STATIC, hx, hy, hz);
+}
+
+// Oriented box (yaw about Y) at any size — high-fidelity building parts placed at a
+// world rotation (angled walls, slabs, mullions). The body's quaternion carries the
+// orientation into the transform buffer, so the renderer draws it rotated.
+EMSCRIPTEN_KEEPALIVE
+int arena_add_box(float x, float y, float z, float hx, float hy, float hz, float yaw, int isDynamic) {
+  b3BodyDef bd = b3DefaultBodyDef();
+  bd.type = isDynamic ? b3_dynamicBody : b3_staticBody;
+  bd.position = (b3Pos){ x, y, z };
+  bd.rotation = b3MakeQuatFromAxisAngle(b3Vec3_axisY, yaw);
+  bd.userData = (void*)(intptr_t) g_count;
+  b3BodyId id = b3CreateBody(g_world, &bd);
+  b3BoxHull hull = b3MakeBoxHull(hx, hy, hz);
+  b3ShapeDef sd = b3DefaultShapeDef();
+  sd.density = 4.0f;
+  sd.baseMaterial.friction = 0.75f;
+  sd.filter.categoryBits = isDynamic ? CAT_BRICK : CAT_STATIC;
+  sd.filter.maskBits = MASK_ALL;
+  b3CreateHullShape(id, &sd, &hull.base);
+  return push_body_ext(id, isDynamic ? KIND_BRICK : KIND_STATIC, hx, hy, hz);
+}
+
+// Dynamic box hinged to the world at a pivot point — playground/level toys.
+// axisMode 0: hinge about the box's LOCAL X axis at the pivot (a seesaw teeters).
+// axisMode 1: hinge about WORLD Y at the pivot (a gate/panel swings).
+// The revolute joint rotates about the joint frame's z-axis; rotY(90°) maps z→X and
+// rotX(-90°) maps z→Y (same convention as the trebuchet arm above). Returns the box
+// handle; the static anchor body is shapeless and unrendered.
+EMSCRIPTEN_KEEPALIVE
+int arena_add_hinged_box(float x, float y, float z, float hx, float hy, float hz, float yaw,
+                         float px, float py, float pz, int axisMode) {
+  b3Quat qYaw = b3MakeQuatFromAxisAngle(b3Vec3_axisY, yaw);
+
+  // The dynamic box.
+  b3BodyDef bd = b3DefaultBodyDef();
+  bd.type = b3_dynamicBody;
+  bd.position = (b3Pos){ x, y, z };
+  bd.rotation = qYaw;
+  bd.userData = (void*)(intptr_t) g_count;
+  b3BodyId box = b3CreateBody(g_world, &bd);
+  b3BoxHull hull = b3MakeBoxHull(hx, hy, hz);
+  b3ShapeDef sd = b3DefaultShapeDef();
+  sd.density = 2.0f;
+  sd.baseMaterial.friction = 0.7f;
+  sd.filter.categoryBits = CAT_BRICK;
+  sd.filter.maskBits = MASK_ALL;
+  b3CreateHullShape(box, &sd, &hull.base);
+
+  // Shapeless static anchor at the pivot (not pushed → never rendered).
+  b3BodyDef ad = b3DefaultBodyDef();
+  ad.type = b3_staticBody;
+  ad.position = (b3Pos){ px, py, pz };
+  b3BodyId anchor = b3CreateBody(g_world, &ad);
+
+  b3Quat qF = (axisMode == 1)
+    ? b3MakeQuatFromAxisAngle((b3Vec3){ 1, 0, 0 }, -1.5707963f)                        // z → world Y
+    : b3MulQuat(qYaw, b3MakeQuatFromAxisAngle((b3Vec3){ 0, 1, 0 }, 1.5707963f));       // z → box local X
+
+  b3RevoluteJointDef jd = b3DefaultRevoluteJointDef();
+  jd.base.bodyIdA = anchor;
+  jd.base.bodyIdB = box;
+  jd.base.localFrameA = (b3Transform){ { 0, 0, 0 }, qF };
+  jd.base.localFrameB = (b3Transform){
+    b3InvRotateVector(qYaw, (b3Vec3){ px - x, py - y, pz - z }),
+    b3InvMulQuat(qYaw, qF),
+  };
+  if (axisMode == 0) {
+    // Seesaw: limited arc (a plank, not a propeller) + a motor-as-brake so it
+    // settles instead of flapping forever (the trebuchet's motorSpeed-0 trick).
+    jd.enableLimit = true;
+    jd.lowerAngle = -0.45f;
+    jd.upperAngle = 0.45f;
+    jd.enableMotor = true;
+    jd.motorSpeed = 0.0f;
+    jd.maxMotorTorque = 150.0f;
+  }
+  b3CreateRevoluteJoint(g_world, &jd);
+
+  return push_body_ext(box, KIND_BRICK, hx, hy, hz);
+}
+
+// Vertical capsule/cylinder (round tower, column, barrel). radius r, half-height hh.
+// ext carries (r, hh, r) so the renderer can draw a cylinder; kind = KIND_CAPSULE.
+EMSCRIPTEN_KEEPALIVE
+int arena_add_capsule(float x, float y, float z, float r, float hh, int isDynamic) {
+  b3BodyDef bd = b3DefaultBodyDef();
+  bd.type = isDynamic ? b3_dynamicBody : b3_staticBody;
+  bd.position = (b3Pos){ x, y, z };
+  bd.userData = (void*)(intptr_t) g_count;
+  b3BodyId id = b3CreateBody(g_world, &bd);
+  b3Capsule cap = { (b3Vec3){ 0.0f, -hh, 0.0f }, (b3Vec3){ 0.0f, hh, 0.0f }, r };
+  b3ShapeDef sd = b3DefaultShapeDef();
+  sd.density = 4.0f;
+  sd.baseMaterial.friction = 0.75f;
+  sd.filter.categoryBits = isDynamic ? CAT_BRICK : CAT_STATIC;
+  sd.filter.maskBits = MASK_ALL;
+  b3CreateCapsuleShape(id, &sd, &cap);
+  return push_body_ext(id, KIND_CAPSULE, r, hh, r);
 }
 
 // Fast dynamic rock (CCD bullet) launched with an initial velocity.
@@ -699,6 +798,14 @@ EMSCRIPTEN_KEEPALIVE
 void arena_impulse(int h, float ix, float iy, float iz) {
   if (h < 0 || h >= g_count || g_kind[h] == KIND_DEAD) return;
   b3Body_ApplyLinearImpulseToCenter(g_bodies[h], (b3Vec3){ ix, iy, iz }, true);
+}
+
+// Impulse applied AT a world point — produces torque, so hinged bodies (seesaws,
+// swinging panels) actually rotate when shoved off-center.
+EMSCRIPTEN_KEEPALIVE
+void arena_impulse_at(int h, float ix, float iy, float iz, float px, float py, float pz) {
+  if (h < 0 || h >= g_count || g_kind[h] == KIND_DEAD) return;
+  b3Body_ApplyLinearImpulse(g_bodies[h], (b3Vec3){ ix, iy, iz }, (b3Pos){ px, py, pz }, true);
 }
 
 // Closest-hit ray cast; returns the hit body's handle, or -1 on miss. Used for

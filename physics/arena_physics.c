@@ -308,12 +308,15 @@ int arena_add_box(float x, float y, float z, float hx, float hy, float hz, float
 // Dynamic box hinged to the world at a pivot point — playground/level toys.
 // axisMode 0: hinge about the box's LOCAL X axis at the pivot (a seesaw teeters).
 // axisMode 1: hinge about WORLD Y at the pivot (a gate/panel swings).
-// The revolute joint rotates about the joint frame's z-axis; rotY(90°) maps z→X and
-// rotX(-90°) maps z→Y (same convention as the trebuchet arm above). Returns the box
-// handle; the static anchor body is shapeless and unrendered.
+// lowerAngle/upperAngle (radians): joint limit arc; pass lower >= upper for a FREE
+// hinge. brakeTorque: motor-as-brake (motorSpeed 0) so the toy settles instead of
+// flapping; 0 = no brake. The revolute joint rotates about the joint frame's z-axis;
+// rotY(90°) maps z→X and rotX(-90°) maps z→Y (same convention as the trebuchet arm
+// above). Returns the box handle; the static anchor body is shapeless and unrendered.
 EMSCRIPTEN_KEEPALIVE
 int arena_add_hinged_box(float x, float y, float z, float hx, float hy, float hz, float yaw,
-                         float px, float py, float pz, int axisMode) {
+                         float px, float py, float pz, int axisMode,
+                         float lowerAngle, float upperAngle, float brakeTorque) {
   b3Quat qYaw = b3MakeQuatFromAxisAngle(b3Vec3_axisY, yaw);
 
   // The dynamic box.
@@ -349,15 +352,15 @@ int arena_add_hinged_box(float x, float y, float z, float hx, float hy, float hz
     b3InvRotateVector(qYaw, (b3Vec3){ px - x, py - y, pz - z }),
     b3InvMulQuat(qYaw, qF),
   };
-  if (axisMode == 0) {
-    // Seesaw: limited arc (a plank, not a propeller) + a motor-as-brake so it
-    // settles instead of flapping forever (the trebuchet's motorSpeed-0 trick).
+  if (lowerAngle < upperAngle) {
     jd.enableLimit = true;
-    jd.lowerAngle = -0.45f;
-    jd.upperAngle = 0.45f;
+    jd.lowerAngle = lowerAngle;
+    jd.upperAngle = upperAngle;
+  }
+  if (brakeTorque > 0.0f) {
     jd.enableMotor = true;
     jd.motorSpeed = 0.0f;
-    jd.maxMotorTorque = 150.0f;
+    jd.maxMotorTorque = brakeTorque;
   }
   b3CreateRevoluteJoint(g_world, &jd);
 
